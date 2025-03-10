@@ -7,7 +7,6 @@ Created on Wed Nov 27 16:29:14 2024
 
 from __future__ import annotations
 import math
-import random
 import sys
 import threading
 from threading import Condition, Lock
@@ -20,6 +19,9 @@ import io
 
 
 class Util:
+    # Use the same initial seed as the C++ code (commonly 1 if not seeded)
+    seed = 1
+
     class Timer:
         def __init__(self):
             self.reset()
@@ -118,9 +120,15 @@ class Util:
         return i * i == n
 
     @staticmethod
+    def rand():
+        """Replicate the common C++ std::rand() algorithm."""
+        Util.seed = (Util.seed * 214013 + 2531011) & 0xFFFFFFFF
+        return (Util.seed >> 16) & 0x7FFF
+
+    @staticmethod
     def rand_float() -> float:
         """Generate a random floating-point number in the range [0.0, 1.0)."""
-        return random.random()
+        return Util.rand() / 32768.0
 
     @staticmethod
     def rand_int(n: int) -> int:
@@ -1088,6 +1096,7 @@ class Bit:
     def clear_bit(b: int, n: int) -> int:
         """Clear the nth bit in the bitboard."""
         assert 0 <= n < 64, "Bit index out of range"
+        assert b & ~Bit.bit(n) == b & ~Bit.bit(n) & 0xFFFFFFFFFFFFFFFF
         return b & ~Bit.bit(n)
 
     @staticmethod
@@ -1311,6 +1320,7 @@ class Castling:
     @staticmethod
     def side(index: int) -> int:
         """Retrieve the side from the castling index."""
+        assert (index < 0) == (Wing.SIZE < 0)
         return index // Wing.SIZE
 
     @staticmethod
@@ -1628,6 +1638,7 @@ class Board:
     
         def pieces(self, sd: int) -> int:
             """Return the bitboard of all pieces for a given side, excluding pawns."""
+            assert self.p_side[sd] & ~self.piece(Piece.PAWN, sd) == self.p_side[sd] & ~self.piece(Piece.PAWN, sd) & 0xFFFFFFFFFFFFFFFF
             return self.p_side[sd] & ~self.piece(Piece.PAWN, sd)
     
         def all_pieces(self) -> int:
@@ -1636,7 +1647,7 @@ class Board:
     
         def empty(self) -> int:
             """Return the bitboard of all empty squares."""
-            return ~self.p_all & ((1 << 64) - 1)  # Ensure it's 64-bit
+            return ~self.p_all & 0xFFFFFFFFFFFFFFFF
     
         def square(self, sq: int) -> int:
             """Return the piece type on a given square."""
@@ -2027,13 +2038,17 @@ class Board:
             self.flip_turn()
     
             # Update castling flags
+            assert self.p_copy.flags & ~Castling.flags_mask[f] == self.p_copy.flags & ~Castling.flags_mask[f] & 0xFFFFFFFFFFFFFFFF
             self.p_copy.flags &= ~Castling.flags_mask[f]
+            
+            assert self.p_copy.flags & ~Castling.flags_mask[t] == self.p_copy.flags & ~Castling.flags_mask[t] & 0xFFFFFFFFFFFFFFFF
             self.p_copy.flags &= ~Castling.flags_mask[t]
     
             # Update en-passant square
             self.p_copy.ep_sq = Square.NONE
     
             if pc == Piece.PAWN and abs(t - f) == Square.DOUBLE_PAWN_DELTA:
+                assert (f + t) >= 0
                 sq = (f + t) // 2
                 if self.pawn_is_attacked(sq, xd):
                     self.p_copy.ep_sq = sq
@@ -2252,9 +2267,9 @@ class Attack:
         assert sd < Side.SIZE, "Invalid side"
         fs = bd.piece(Piece.PAWN, sd)
         if sd == Side.WHITE:
-            return (fs >> 7) | (fs << 9) & ((1 << 64) - 1)
+            return ((fs >> 7) | (fs << 9)) & 0xFFFFFFFFFFFFFFFF
         else:
-            return (fs >> 9) | (fs << 7) & ((1 << 64) - 1)
+            return ((fs >> 9) | (fs << 7)) & 0xFFFFFFFFFFFFFFFF
     
     @staticmethod
     def pawn_attacks_tos(sd: int, ts: int) -> int:
@@ -2265,9 +2280,9 @@ class Attack:
         """
         assert sd < Side.SIZE, "Invalid side"
         if sd == Side.WHITE:
-            return (ts >> 9) | (ts << 7) & ((1 << 64) - 1)
+            return ((ts >> 9) | (ts << 7)) & 0xFFFFFFFFFFFFFFFF
         else:
-            return (ts >> 7) | (ts << 9) & ((1 << 64) - 1)
+            return ((ts >> 7) | (ts << 9)) & 0xFFFFFFFFFFFFFFFF
     
     @staticmethod
     def pawn_attacks_from_single(sd: int, f: int) -> int:
@@ -2304,6 +2319,7 @@ class Attack:
         b = bd.all_pieces() & Attack.Blockers[pc][f]
         while b != 0:
             sq = Bit.first(b)
+            assert ts & ~Attack.Behind[f][sq] == ts & ~Attack.Behind[f][sq] & 0xFFFFFFFFFFFFFFFF
             ts &= ~Attack.Behind[f][sq]
             b = Bit.rest(b)
             
@@ -2987,6 +3003,8 @@ class Gen:
         if sd == Side.WHITE:
             # Single push
             pushes = (pawns & (ts >> 1) & ~Bit.rank(Square.RANK_7))
+            assert pushes == pushes & 0xFFFFFFFFFFFFFFFF
+            
             while pushes != 0:
                 f = Bit.first(pushes)
                 t = f + 1
@@ -3008,6 +3026,8 @@ class Gen:
             # Black side
             # Single push
             pushes = (pawns & (ts << 1) & ~Bit.rank(Square.RANK_2))
+            assert pushes == pushes & 0xFFFFFFFFFFFFFFFF
+            
             while pushes != 0:
                 f = Bit.first(pushes)
                 t = f - 1
@@ -3036,9 +3056,12 @@ class Gen:
         if sd == Side.WHITE:
             ts |= Bit.rank(Square.RANK_7)
             ts |= Bit.rank(Square.RANK_6) & ~Attack.pawn_attacks_from(Side.BLACK, bd) & (~bd.piece(Piece.PAWN) >> 1)
+            assert ts == ts & 0xFFFFFFFFFFFFFFFF
+            
         else:
             ts |= Bit.rank(Square.RANK_2)
             ts |= Bit.rank(Square.RANK_3) & ~Attack.pawn_attacks_from(Side.WHITE, bd) & (~bd.piece(Piece.PAWN) << 1)
+            assert ts == ts & 0xFFFFFFFFFFFFFFFF
 
         Gen.add_pawn_quiets(ml, sd, ts & bd.empty(), bd)
 
@@ -3262,7 +3285,7 @@ class Gen:
 
         king = bd.king(sd)
 
-        Gen.add_piece_moves_from(ml, king, ~bd.side(sd) & ~attacks.avoid, bd)
+        Gen.add_piece_moves_from(ml, king, ~bd.side(sd) & ~attacks.avoid & 0xFFFFFFFFFFFFFFFF, bd)
 
         if attacks.size == 1:
             t = attacks.square[0]
@@ -3298,12 +3321,15 @@ class Gen:
         pinned = Attack.pinned_by(king, atk, bd)
         empty = bd.empty()
         empty &= ~Attack.pawn_attacks_from(Side.opposit(sd), bd)  # pawn-safe
+        assert empty == empty & 0xFFFFFFFFFFFFFFFF
 
         # Discovered checks
         fs = bd.pieces(atk) & pinned
         while fs != 0:
             f = Bit.first(fs)
             ts = empty & ~Attack.ray(king, f)
+            assert ts == ts & 0xFFFFFFFFFFFFFFFF
+            
             Gen.add_piece_moves_from(ml, f, ts, bd)
             fs = Bit.rest(fs)
 
@@ -3315,6 +3341,8 @@ class Gen:
         pc = Piece.KNIGHT
         attacks = Attack.pseudo_attacks_to(pc, sd, king) & empty
         pieces = bd.piece(pc, sd) & ~pinned
+        assert pieces == pieces & 0xFFFFFFFFFFFFFFFF
+        
         while pieces != 0:
             f = Bit.first(pieces)
             moves = Attack.pseudo_attacks_from(pc, sd, f)
@@ -3329,6 +3357,8 @@ class Gen:
         for pc in range(Piece.BISHOP, Piece.QUEEN + 1):
             attacks = Attack.pseudo_attacks_to(pc, sd, king) & empty
             pieces = bd.piece(pc, sd) & ~pinned
+            assert pieces == pieces & 0xFFFFFFFFFFFFFFFF
+            
             while pieces != 0:
                 f = Bit.first(pieces)
                 moves = Attack.pseudo_attacks_from(pc, sd, f) & attacks
@@ -3435,8 +3465,10 @@ class Score:
         Convert a mate score to a signed mate distance.
         """
         if sc < Score.EVAL_MIN:  # -MATE
+            assert -(Score.MATE + sc) >= 0
             return -(Score.MATE + sc) // 2
         elif sc > Score.EVAL_MAX:  # +MATE
+            assert (Score.MATE - sc + 1) >= 0
             return (Score.MATE - sc + 1) // 2
         else:
             assert False, "signed_mate called with non-mate score"
@@ -3527,7 +3559,7 @@ class Trans:
             Calculate the number of bits needed based on the desired table size.
             """
             bits = 0
-            entries = (size << 20) // 16  # Assuming sizeof(Entry) == 16
+            entries = (size << 20) // 16
             while entries > 1:
                 bits += 1
                 entries //= 2
@@ -3665,8 +3697,11 @@ class Trans:
                     elif Score.is_mate(score[0]):
                         if score[0] < 0:
                             flags[0] &= ~Score.FLAGS_LOWER
+                            assert flags[0] == flags[0] & 0xFFFFFFFFFFFFFFFF
+                            
                         else:
                             flags[0] &= ~Score.FLAGS_UPPER
+                            assert flags[0] == flags[0] & 0xFFFFFFFFFFFFFFFF
                         return True
 
                     return False
@@ -3855,6 +3890,8 @@ class Pawn:
         """
         fl = Square.file(sq)
         files = Bit.files(fl) & ~Bit.file(fl)
+        assert files == files & 0xFFFFFFFFFFFFFFFF
+        
         return (bd.piece(Piece.PAWN, sd) & files) == 0
 
     @staticmethod
@@ -4006,11 +4043,11 @@ class Pawn:
 
                 # Check pawn structure
                 if Pawn.is_isolated(sq, sd, bd):
-                    Bit.set_bit(weak, sq)
+                    weak = Bit.set_bit(weak, sq)
                     info.mg -= 10
                     info.eg -= 20
                 elif Pawn.is_weak(sq, sd, bd):
-                    Bit.set_bit(weak, sq)
+                    weak = Bit.set_bit(weak, sq)
                     info.mg -= 5
                     info.eg -= 10
 
@@ -4019,16 +4056,17 @@ class Pawn:
                     info.eg -= 10
 
                 if Pawn.is_passed(sq, sd, bd):
-                    Bit.set_bit(info.passed, sq)
+                    info.passed = Bit.set_bit(info.passed, sq)
                     info.mg += 10
                     info.eg += 20
                     if rk >= Square.RANK_5:
                         stop = Square.stop(sq, sd)
                         if Pawn.is_duo(sq, sd, bd) and rk <= Square.RANK_6:
                             stop += Square.pawn_inc(sd)
-                        Bit.set_bit(info.target[Side.opposit(sd)], stop)
+                        info.target[Side.opposit(sd)] = Bit.set_bit(info.target[Side.opposit(sd)], stop)
 
                 safe[Side.opposit(sd)] &= ~Pawn.potential_attacks(sq, sd, bd)
+                assert safe[Side.opposit(sd)] == safe[Side.opposit(sd)] & 0xFFFFFFFFFFFFFFFF
 
                 # Remove the processed pawn
                 b = Bit.rest(b)
@@ -4042,6 +4080,8 @@ class Pawn:
             info.eg = -info.eg
 
         weak &= ~strong  # Defended doubled pawns are not weak
+        assert weak == weak & 0xFFFFFFFFFFFFFFFF
+        
         assert (weak & strong) == 0, "Weak and strong pawns overlap."
 
         info.target[Side.WHITE] |= bd.piece(Piece.PAWN, Side.BLACK) & weak
@@ -4089,9 +4129,9 @@ class Pawn:
 
             b = 0
             if fl != Square.FILE_A:
-                Bit.set_bit(b, sq + Square.INC_LEFT)
+                b = Bit.set_bit(b, sq + Square.INC_LEFT)
             if fl != Square.FILE_H:
-                Bit.set_bit(b, sq + Square.INC_RIGHT)
+                b = Bit.set_bit(b, sq + Square.INC_RIGHT)
             Pawn.duo[sq] = b
 
 
@@ -4727,6 +4767,7 @@ class Eval:
             king = bd.king(sd)
             ts = Attack.pseudo_attacks_from(Piece.KING, sd, king)
             ai.king_evasions[sd] = ts & ~bd.side(sd) & ~ai.all_attacks[Side.opposit(sd)]
+            assert ai.king_evasions[sd] == ai.king_evasions[sd] & 0xFFFFFFFFFFFFFFFF
 
         # Pinned pieces
         ai.pinned = 0
@@ -4759,8 +4800,11 @@ class Eval:
         sc = c1 * 2 + c0
 
         sc += Bit.count(ts & Eval.side_area[Side.opposit(sd)])
-
-        return (sc - 4) * Eval.attack_weight[pc] // 2
+        
+        if (sc - 4) * Eval.attack_weight[pc] < 0:
+            return int((sc - 4) * Eval.attack_weight[pc] / 2)
+        else:
+            return (sc - 4) * Eval.attack_weight[pc] // 2
 
     @staticmethod
     def attack_eg_score(pc: int, sd: int, ts: int, pi: 'Pawn.Info') -> int:
@@ -4798,6 +4842,7 @@ class Eval:
                 s1 = max(s1, pi.shelter[fl][sd])
 
         if s1 > s0:
+            assert (s0 + s1) >= 0
             return (s0 + s1) // 2
         else:
             return s0
@@ -4841,6 +4886,8 @@ class Eval:
             return True
 
         king_attacks = Attack.pseudo_attacks_from(Piece.KING, sd, bd.king(sd))
+        
+        assert (front & ~king_attacks) == (front & ~king_attacks) & 0xFFFFFFFFFFFFFFFF
         if (front & ~king_attacks) == 0:
             return True
 
@@ -4896,7 +4943,8 @@ class Eval:
                 sc += (Piece.value(cp) - 50) * 2
 
             b = Bit.rest(b)
-
+            
+        assert sc >= 0
         return sc // 10
 
     @staticmethod
@@ -4943,6 +4991,7 @@ class Eval:
             b = bd.piece(Piece.BISHOP, sd)
 
             # Queenside
+            assert (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) == (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) & 0xFFFFFFFFFFFFFFFF
             if ((bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) == 0 and
                 (bd.piece(Piece.PAWN, xd) & Bit.file(Square.FILE_B)) == 0):
                 prom = Square.A8 if sd == Side.WHITE else Square.A1
@@ -4951,6 +5000,7 @@ class Eval:
                         return 1
 
             # Kingside
+            assert (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) == (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) & 0xFFFFFFFFFFFFFFFF
             if ((bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) == 0 and
                 (bd.piece(Piece.PAWN, xd) & Bit.file(Square.FILE_G)) == 0):
                 prom = Square.H8 if sd == Side.WHITE else Square.H1
@@ -5010,6 +5060,7 @@ class Eval:
 
         xd = Side.opposit(sd)
         checks = ts & ~bd.side(sd) & Attack.pseudo_attacks_to(pc, sd, king)
+        assert checks == checks & 0xFFFFFFFFFFFFFFFF
 
         if not Piece.is_slider(pc):
             return Bit.count(checks)
@@ -5020,6 +5071,7 @@ class Eval:
         b = checks & Attack.pseudo_attacks_to(Piece.KING, xd, king)
         n += Bit.count(b) * 2
         checks &= ~b
+        assert checks == checks & 0xFFFFFFFFFFFFFFFF
 
         # Sliding Checks
         while checks != 0:
@@ -5055,7 +5107,7 @@ class Eval:
             my_king = bd.king(sd)
             op_king = bd.king(xd)
 
-            target = ~(bd.piece(Piece.PAWN, sd) | Attack.pawn_attacks_from(xd, bd))
+            target = ~(bd.piece(Piece.PAWN, sd) | Attack.pawn_attacks_from(xd, bd)) & 0xFFFFFFFFFFFFFFFF
 
             king_n = 0
             king_power = 0
@@ -5072,6 +5124,7 @@ class Eval:
                 if Eval.passer_is_unstoppable(sq, sd, bd):
                     weight = max(rk - Square.RANK_3, 0)
                     assert 0 <= weight < 5, "Weight out of range"
+                    assert (Piece.QUEEN_VALUE - Piece.PAWN_VALUE) * weight >= 0
                     eg += (Piece.QUEEN_VALUE - Piece.PAWN_VALUE) * weight // 5
                 else:
                     sc = Eval.eval_passed(sq, sd, bd, ai)
@@ -5111,7 +5164,7 @@ class Eval:
                     ts_all = ai.piece_attacks[sq]
                     ts_pawn_safe = ts_all & target
 
-                    safe = ~ai.all_attacks[xd] | ai.multiple_attacks[sd]
+                    safe = (~ai.all_attacks[xd] | ai.multiple_attacks[sd]) & 0xFFFFFFFFFFFFFFFF
 
                     if Piece.is_slider(pc):
                         # Battery support
@@ -5130,6 +5183,7 @@ class Eval:
                             inner_b = Bit.rest(inner_b)
 
                     ts_safe = ts_pawn_safe & ~ai.lt_attacks[xd][pc] & safe
+                    assert ts_safe == ts_safe & 0xFFFFFFFFFFFFFFFF
 
                     mg += PST.score(p12, sq, Stage.MG)
                     eg += PST.score(p12, sq, Stage.EG)
@@ -5183,6 +5237,7 @@ class Eval:
                         if sc >= 10 and abs(Square.file(op_king) - fl) <= 1:
                             # Open file on king
                             weight = 2 if Square.file(op_king) == fl else 1
+                            assert sc * weight >= 0
                             mg += sc * weight // 2
 
                     if pc == Piece.ROOK and Square.rank(sq, sd) == Square.RANK_7:
@@ -5245,11 +5300,11 @@ class Eval:
             fl = Square.file(sq)
             rk = Square.rank(sq)
             if Square.FILE_D <= fl <= Square.FILE_E and Square.RANK_4 <= rk <= Square.RANK_5:
-                Bit.set_bit(Eval.small_centre, sq)
+                Eval.small_centre = Bit.set_bit(Eval.small_centre, sq)
             if Square.FILE_C <= fl <= Square.FILE_F and Square.RANK_3 <= rk <= Square.RANK_6:
-                Bit.set_bit(Eval.medium_centre, sq)
+                Eval.medium_centre = Bit.set_bit(Eval.medium_centre, sq)
             if Square.FILE_B <= fl <= Square.FILE_G and Square.RANK_2 <= rk <= Square.RANK_7:
-                Bit.set_bit(Eval.large_centre, sq)
+                Eval.large_centre = Bit.set_bit(Eval.large_centre, sq)
 
         Eval.large_centre &= ~Eval.medium_centre
         Eval.medium_centre &= ~Eval.small_centre
@@ -5264,9 +5319,9 @@ class Eval:
         for sq in range(Square.SIZE):
             rk = Square.rank(sq)
             if rk <= Square.RANK_4:
-                Bit.set_bit(Eval.side_area[Side.WHITE], sq)
+                Eval.side_area[Side.WHITE] = Bit.set_bit(Eval.side_area[Side.WHITE], sq)
             else:
-                Bit.set_bit(Eval.side_area[Side.BLACK], sq)
+                Eval.side_area[Side.BLACK] = Bit.set_bit(Eval.side_area[Side.BLACK], sq)
 
         # init_king_area
         for ks in range(Square.SIZE):
@@ -5277,9 +5332,9 @@ class Eval:
                 df = Square.file(asq) - Square.file(ks)
                 dr = Square.rank(asq) - Square.rank(ks)
                 if abs(df) <= 1 and -1 <= dr <= 2:
-                    Bit.set_bit(Eval.king_area[Side.WHITE][ks], asq)
+                    Eval.king_area[Side.WHITE][ks] = Bit.set_bit(Eval.king_area[Side.WHITE][ks], asq)
                 if abs(df) <= 1 and -2 <= dr <= 1:
-                    Bit.set_bit(Eval.king_area[Side.BLACK][ks], asq)
+                    Eval.king_area[Side.BLACK][ks] = Bit.set_bit(Eval.king_area[Side.BLACK][ks], asq)
         
         # init_weights
         for i in range(32):
@@ -6305,7 +6360,7 @@ class Search:
             if Bit.is_set(done, Move.to_sq(mv)):
                 continue
 
-            Bit.set_bit(done, Move.to_sq(mv))
+            done = Bit.set_bit(done, Move.to_sq(mv))
 
             see = Move.see(mv, 0, Score.EVAL_MAX, bd)
             if see <= 0:
@@ -6347,7 +6402,8 @@ class Search:
                             Search.p_time.flag = True
                         else:
                             abort = True
-
+            
+            assert Search.p_time.limit_0 >= 0
             if Search.p_time.smart and Search.current.depth > 1 and Search.current.size == 1 and Search.current.time >= Search.p_time.limit_0 // 8:
                 if Search.p_time.ponder:
                     Search.p_time.flag = True
@@ -6451,8 +6507,11 @@ class Search:
             Search.move(sl, mv)
             sc = -Search.qs_static(sl, Score.MAX, 0)
             Search.undo(sl)
-
-            sc = ((sc - v) // 4) + 1024  # HACK for unsigned 11-bit move-list scores
+            
+            if (sc - v) < 0:
+                sc = int((sc - v) / 4) + 1024
+            else:
+                sc = ((sc - v) // 4) + 1024  # HACK for unsigned 11-bit move-list scores
             assert 0 <= sc < Move.SCORE_SIZE
 
             ml.set_score(pos, sc)
@@ -6599,7 +6658,8 @@ class Search:
                 abort = False
 
                 Search.update_current()
-
+                
+                assert Search.p_time.limit_0 >= 0
                 if ml.size() == 1 and Search.current.time >= Search.p_time.limit_0 // 16:
                     abort = True
 
