@@ -19,9 +19,6 @@ import io
 
 
 class Util:
-    # Use the same initial seed as the C++ code (commonly 1 if not seeded)
-    seed = 1
-
     class Timer:
         def __init__(self):
             self.reset()
@@ -90,6 +87,40 @@ class Util:
         def signal(self):
             """Notify one waiting thread."""
             self.p_cond.notify()
+    
+    class GlibcRand:
+        def __init__(self, seed=1):
+            """
+            Initialize the state for the GLIBC random() algorithm.
+            This builds the initial state r[0..343] using:
+            r[0] = seed
+            for i in 1..30:  r[i] = (16807 * r[i-1]) % 2147483647
+            for i in 31..33: r[i] = r[i-31]
+            for i in 34..343: r[i] = (r[i-31] + r[i-3]) mod 2^32
+            """
+            self.r = [0] * 344  # Pre-allocate state list for indices 0 to 343
+            self.r[0] = seed
+            for i in range(1, 31):
+                self.r[i] = (16807 * self.r[i - 1]) % 2147483647
+            for i in range(31, 34):
+                self.r[i] = self.r[i - 31]
+            for i in range(34, 344):
+                self.r[i] = (self.r[i - 31] + self.r[i - 3]) & 0xFFFFFFFF  # modulo 2^32
+
+            self.index = 344  # Next index to compute
+
+        def rand(self):
+            """
+            Compute the next pseudo-random number.
+            The algorithm computes:
+                new_val = (r[index-31] + r[index-3]) mod 2^32,
+            appends it to the state, and returns new_val >> 1 (a 31-bit value).
+            """
+            new_val = (self.r[self.index - 31] + self.r[self.index - 3]) & 0xFFFFFFFF
+            self.r.append(new_val)
+            self.index += 1
+            # The output is the computed value shifted right by 1.
+            return new_val >> 1
 
     @staticmethod
     def round(x: float) -> int:
@@ -100,13 +131,11 @@ class Util:
     def div(a: int, b: int) -> int:
         """
         Perform integer division with flooring.
-        This replicates the behavior of C++ division for negative numbers.
+        In C++, integer division truncates towards zero (like rounding towards 0)
+        In Python, integer division always rounds down (towards negative infinity)
         """
         assert b > 0, "Divider must be positive"
-        div_result = a // b
-        # if a < 0 and a != b * div_result:
-        #     div_result -= 1
-        return div_result
+        return a // b
 
     @staticmethod
     def sqrt(n: int) -> int:
@@ -119,16 +148,21 @@ class Util:
         i = Util.sqrt(n)
         return i * i == n
 
-    @staticmethod
-    def rand():
-        """Replicate the common C++ std::rand() algorithm."""
-        Util.seed = (Util.seed * 214013 + 2531011) & 0xFFFFFFFF
-        return (Util.seed >> 16) & 0x7FFF
+    # @staticmethod
+    # def rand():
+    #     """Replicate the common C++ std::rand() algorithm."""
+    #     Util.seed = (Util.seed * 214013 + 2531011) & 0xFFFFFFFF
+    #     return (Util.seed >> 16) & 0x7FFF
 
+    # @staticmethod
+    # def rand_float() -> float:
+    #     """Generate a random floating-point number in the range [0.0, 1.0)."""
+    #     return Util.rand() / 32768.0
+    
     @staticmethod
     def rand_float() -> float:
         """Generate a random floating-point number in the range [0.0, 1.0)."""
-        return Util.rand() / 32768.0
+        return Util.rng.rand() / 2147483648.0
 
     @staticmethod
     def rand_int(n: int) -> int:
@@ -206,11 +240,13 @@ class Util:
         with open("log.txt", "a") as log_file:
             log_file.write(s + "\n")
 
+    @classmethod
+    def init(cls):
+        """Initialize the Util class."""
+        cls.rng = cls.GlibcRand(seed=1)
+
 
 class Input:
-    input_instance = None
-    input_thread = None
-    
     class INPUT(Util.Waitable):    
         def __init__(self):
             super().__init__()
@@ -1320,7 +1356,6 @@ class Castling:
     @staticmethod
     def side(index: int) -> int:
         """Retrieve the side from the castling index."""
-        assert (index < 0) == (Wing.SIZE < 0)
         return index // Wing.SIZE
 
     @staticmethod
@@ -2048,7 +2083,6 @@ class Board:
             self.p_copy.ep_sq = Square.NONE
     
             if pc == Piece.PAWN and abs(t - f) == Square.DOUBLE_PAWN_DELTA:
-                assert (f + t) >= 0
                 sq = (f + t) // 2
                 if self.pawn_is_attacked(sq, xd):
                     self.p_copy.ep_sq = sq
@@ -3465,10 +3499,8 @@ class Score:
         Convert a mate score to a signed mate distance.
         """
         if sc < Score.EVAL_MIN:  # -MATE
-            assert -(Score.MATE + sc) >= 0
             return -(Score.MATE + sc) // 2
         elif sc > Score.EVAL_MAX:  # +MATE
-            assert (Score.MATE - sc + 1) >= 0
             return (Score.MATE - sc + 1) // 2
         else:
             assert False, "signed_mate called with non-mate score"
@@ -3521,14 +3553,12 @@ class Score:
 class Trans:
     @dataclass
     class Entry:
-        lock: int = 0        # uint32
-        move: int = Move.NONE  # uint32
-        pad_1: int = 0       # uint16
-        score: int = 0       # int16
-        date: int = 0        # uint8
-        depth: int = -1      # int8
-        flags: int = Score.FLAGS_NONE  # uint8
-        pad_2: int = 0       # uint8
+        lock: int = 0
+        move: int = Move.NONE
+        score: int = 0
+        date: int = 0
+        depth: int = -1
+        flags: int = Score.FLAGS_NONE
 
     @staticmethod
     def clear_entry(entry: 'Trans.Entry'):
@@ -3537,12 +3567,10 @@ class Trans:
         """
         entry.lock = 0
         entry.move = Move.NONE
-        entry.pad_1 = 0
         entry.score = 0
         entry.date = 0
         entry.depth = -1
         entry.flags = Score.FLAGS_NONE
-        entry.pad_2 = 0
 
     class Table:
         def __init__(self):
@@ -3559,7 +3587,7 @@ class Trans:
             Calculate the number of bits needed based on the desired table size.
             """
             bits = 0
-            entries = (size << 20) // 16
+            entries = (size << 20) // 16 # assuming 16 bytes per entry
             while entries > 1:
                 bits += 1
                 entries //= 2
@@ -5124,7 +5152,6 @@ class Eval:
                 if Eval.passer_is_unstoppable(sq, sd, bd):
                     weight = max(rk - Square.RANK_3, 0)
                     assert 0 <= weight < 5, "Weight out of range"
-                    assert (Piece.QUEEN_VALUE - Piece.PAWN_VALUE) * weight >= 0
                     eg += (Piece.QUEEN_VALUE - Piece.PAWN_VALUE) * weight // 5
                 else:
                     sc = Eval.eval_passed(sq, sd, bd, ai)
@@ -5641,23 +5668,12 @@ class Search:
             self.node = 0
             self.max_ply = 0
 
-            self.msp_stack: List[Search.SplitPoint] = []
+            self.msp_stack: List[Search.SplitPoint] = [Search.SplitPoint() for _ in range(16)]
             self.msp_stack_size = 0
 
             self.ssp_stack: List[Search.SplitPoint] = []
             self.ssp_stack_size = 0
-    
-    @classmethod
-    def initialize_instances(cls):
-        """Initialize class-level instances after the class is fully defined."""
-        cls.p_time = cls.Time()
-        cls.current = cls.Current()
-        cls.best = cls.Best()
-        cls.sg = cls.SearchGlobal()
-        cls.smp = cls.SMP()
-        cls.p_sl = [cls.SearchLocal() for _ in range(cls.MAX_THREADS)]
-        cls.root_sp = cls.SplitPoint()
-        
+
     # Helper Functions
     @staticmethod
     def new_search():
@@ -6286,13 +6302,13 @@ class Search:
         in_check = Attack.is_in_check(bd)
 
         while True:
-            sl.lock()
+            sp.lock()
             try:
                 mv = sp.next_move()
                 alpha = sp.alpha()
                 searched_size = sp.searched_size()
             finally:
-                sl.unlock()
+                sp.unlock()
 
             if mv == Move.NONE:
                 break
@@ -6746,11 +6762,18 @@ class Search:
 
         Search.search_go(bd)
 
-    @staticmethod
-    def init():
-        Search.sg.trans.set_size(Engine.engine.hash_size)
-        Search.sg.trans.alloc()
-    
+    @classmethod
+    def init(cls):
+        cls.p_time = cls.Time()
+        cls.current = cls.Current()
+        cls.best = cls.Best()
+        cls.sg = cls.SearchGlobal()
+        cls.smp = cls.SMP()
+        cls.p_sl = [cls.SearchLocal() for _ in range(cls.MAX_THREADS)]
+        cls.root_sp = cls.SplitPoint()
+
+        cls.sg.trans.set_size(Engine.engine.hash_size)
+        cls.sg.trans.alloc()
     
 class UCI:
     bd: 'Board.BOARD' = Board.BOARD()
@@ -6998,6 +7021,7 @@ class UCI:
 
 def main():
     # Initialize all components
+    Util.init()
     Input.init()
     Bit.init()
     Hash.init()
@@ -7008,7 +7032,6 @@ def main():
     PST.init()
     Pawn.init()
     Eval.init()
-    Search.initialize_instances()
     Search.init()
 
     # Start the UCI loop
