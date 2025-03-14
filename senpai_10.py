@@ -6,16 +6,17 @@ Created on Wed Nov 27 16:29:14 2024
 """
 
 from __future__ import annotations
+
+import copy
+import io
 import math
 import sys
 import threading
-from threading import Condition, Lock
-from dataclasses import dataclass, field
-from typing import List, Optional
 import time
+from dataclasses import dataclass, field
 from enum import Enum
-import copy
-import io
+from threading import Condition, Lock
+from typing import List, Optional
 
 
 class Util:
@@ -87,9 +88,9 @@ class Util:
         def signal(self):
             """Notify one waiting thread."""
             self.p_cond.notify()
-    
+
     class GlibcRand:
-        def __init__(self, seed=1):
+        def __init__(self, seed: int = 1) -> None:
             """
             Initialize the state for the GLIBC random() algorithm.
             This builds the initial state r[0..343] using:
@@ -98,7 +99,7 @@ class Util:
             for i in 31..33: r[i] = r[i-31]
             for i in 34..343: r[i] = (r[i-31] + r[i-3]) mod 2^32
             """
-            self.r = [0] * 344  # Pre-allocate state list for indices 0 to 343
+            self.r: list[int] = [0] * 344  # Pre-allocate state list for indices 0 to 343
             self.r[0] = seed
             for i in range(1, 31):
                 self.r[i] = (16807 * self.r[i - 1]) % 2147483647
@@ -107,19 +108,18 @@ class Util:
             for i in range(34, 344):
                 self.r[i] = (self.r[i - 31] + self.r[i - 3]) & 0xFFFFFFFF  # modulo 2^32
 
-            self.index = 344  # Next index to compute
+            self.index: int = 344  # Next index to compute
 
-        def rand(self):
+        def rand(self) -> int:
             """
             Compute the next pseudo-random number.
             The algorithm computes:
                 new_val = (r[index-31] + r[index-3]) mod 2^32,
             appends it to the state, and returns new_val >> 1 (a 31-bit value).
             """
-            new_val = (self.r[self.index - 31] + self.r[self.index - 3]) & 0xFFFFFFFF
+            new_val: int = (self.r[self.index - 31] + self.r[self.index - 3]) & 0xFFFFFFFF
             self.r.append(new_val)
             self.index += 1
-            # The output is the computed value shifted right by 1.
             return new_val >> 1
 
     @staticmethod
@@ -147,17 +147,6 @@ class Util:
         """Check if a number is a perfect square."""
         i = Util.sqrt(n)
         return i * i == n
-
-    # @staticmethod
-    # def rand():
-    #     """Replicate the common C++ std::rand() algorithm."""
-    #     Util.seed = (Util.seed * 214013 + 2531011) & 0xFFFFFFFF
-    #     return (Util.seed >> 16) & 0x7FFF
-
-    # @staticmethod
-    # def rand_float() -> float:
-    #     """Generate a random floating-point number in the range [0.0, 1.0)."""
-    #     return Util.rand() / 32768.0
     
     @staticmethod
     def rand_float() -> float:
@@ -5767,6 +5756,7 @@ class Search:
                 print(" upperbound", end="")
 
             print(f" pv {best.pv.to_can()}")
+            sys.stdout.flush()
         finally:
             Search.sg.unlock()
 
@@ -5784,6 +5774,7 @@ class Search:
             if Search.current.speed != 0:
                 print(f" nps {Search.current.speed}", end="")
             print(f" hashfull {Search.sg.trans.used()}")
+            sys.stdout.flush()
         finally:
             Search.sg.unlock()
 
@@ -6449,6 +6440,7 @@ class Search:
                 sys.exit(0)
             elif line == "isready":
                 print("readyok")
+                sys.stdout.flush()
                 return False
             elif line == "stop":
                 UCI.infinite = False
@@ -6843,6 +6835,7 @@ class UCI:
             ponder_move_can = Move.to_can(Search.best.pv.move(1))
             output += f" ponder {ponder_move_can}"
         print(output)
+        sys.stdout.flush()
         UCI.delay = False
 
     @staticmethod
@@ -6860,9 +6853,11 @@ class UCI:
             print(f"option name Threads type spin default {Engine.engine.threads} min 1 max 16")
             print(f"option name Log File type check default {Engine.engine.log}")
             print("uciok")
+            sys.stdout.flush()
 
         elif command == "isready":
             print("readyok")
+            sys.stdout.flush()
 
         elif command == "setoption":
             scan.add_keyword("name")
