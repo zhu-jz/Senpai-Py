@@ -3540,30 +3540,128 @@ class Score:
 
 
 class Trans:
-    @dataclass
     class Entry:
-        lock: int = 0
-        move: int = Move.NONE
-        score: int = 0
-        date: int = 0
-        depth: int = -1
-        flags: int = Score.FLAGS_NONE
+        """
+        Packed representation of a transposition table entry.
+        Bit layout:
+        [103-72] lock (unsigned 32 bits)
+        [71-40]  move (unsigned 32 bits)
+        [39-24]  score (signed 16 bits)
+        [23-16]  date (unsigned 8 bits)
+        [15-8]   depth (signed 8 bits)
+        [7-0]    flags (unsigned 8 bits)
+        """
 
-    @staticmethod
-    def clear_entry(entry: 'Trans.Entry'):
-        """
-        Reset the transposition table entry to default values.
-        """
-        entry.lock = 0
-        entry.move = Move.NONE
-        entry.score = 0
-        entry.date = 0
-        entry.depth = -1
-        entry.flags = Score.FLAGS_NONE
+        # Define bit shifts for each field
+        LOCK_SHIFT = 72
+        MOVE_SHIFT = 40
+        SCORE_SHIFT = 24
+        DATE_SHIFT = 16
+        DEPTH_SHIFT = 8
+        FLAGS_SHIFT = 0
+
+        # Define bit masks for each field
+        LOCK_MASK = 0xFFFFFFFF << LOCK_SHIFT
+        MOVE_MASK = 0xFFFFFFFF << MOVE_SHIFT
+        SCORE_MASK = 0xFFFF << SCORE_SHIFT
+        DATE_MASK = 0xFF << DATE_SHIFT
+        DEPTH_MASK = 0xFF << DEPTH_SHIFT
+        FLAGS_MASK = 0xFF  << FLAGS_SHIFT  # same as 0xFF
+
+        def __init__(self, value=0):
+            self.value = value
+
+        @classmethod
+        def create(cls, lock=0, move=0, score=0, date=0, depth=-1, flags=0):
+            """
+            Create a new Entry with the specified values.
+            Expects:
+            - lock: unsigned 32-bit int
+            - move: unsigned 32-bit int (e.g. Move.NONE)
+            - score: signed 16-bit int
+            - date: unsigned 8-bit int
+            - depth: signed 8-bit int (default -1)
+            - flags: unsigned 8-bit int (e.g. Score.FLAGS_NONE)
+            """
+            # Ensure values are within range
+            lock  &= 0xFFFFFFFF   # 32 bits
+            move  &= 0xFFFFFFFF   # 32 bits
+            score &= 0xFFFF       # 16 bits (stored in two's complement)
+            date  &= 0xFF         # 8 bits
+            depth &= 0xFF         # 8 bits (two's complement for signed)
+            flags &= 0xFF         # 8 bits
+
+            # Pack values into one integer
+            value = (lock  << cls.LOCK_SHIFT) | \
+                    (move  << cls.MOVE_SHIFT) | \
+                    (score << cls.SCORE_SHIFT) | \
+                    (date  << cls.DATE_SHIFT) | \
+                    (depth << cls.DEPTH_SHIFT) | \
+                    (flags << cls.FLAGS_SHIFT)
+            return cls(value)
+
+        @property
+        def lock(self):
+            return (self.value & self.LOCK_MASK) >> self.LOCK_SHIFT
+
+        @lock.setter
+        def lock(self, lock):
+            self.value = (self.value & ~self.LOCK_MASK) | ((lock & 0xFFFFFFFF) << self.LOCK_SHIFT)
+
+        @property
+        def move(self):
+            return (self.value & self.MOVE_MASK) >> self.MOVE_SHIFT
+
+        @move.setter
+        def move(self, move):
+            self.value = (self.value & ~self.MOVE_MASK) | ((move & 0xFFFFFFFF) << self.MOVE_SHIFT)
+
+        @property
+        def score(self):
+            # Extract score and perform sign extension for a 16-bit signed integer.
+            score = (self.value & self.SCORE_MASK) >> self.SCORE_SHIFT
+            if score & 0x8000:  # If sign bit is set
+                score = score - 0x10000
+            return score
+
+        @score.setter
+        def score(self, score):
+            score &= 0xFFFF
+            self.value = (self.value & ~self.SCORE_MASK) | ((score & 0xFFFF) << self.SCORE_SHIFT)
+
+        @property
+        def date(self):
+            return (self.value & self.DATE_MASK) >> self.DATE_SHIFT
+
+        @date.setter
+        def date(self, date):
+            self.value = (self.value & ~self.DATE_MASK) | ((date & 0xFF) << self.DATE_SHIFT)
+
+        @property
+        def depth(self):
+            # Extract depth and perform sign extension for an 8-bit signed integer.
+            depth = (self.value & self.DEPTH_MASK) >> self.DEPTH_SHIFT
+            if depth & 0x80:  # Check if the sign bit is set
+                depth = depth - 0x100
+            return depth
+
+        @depth.setter
+        def depth(self, depth):
+            depth &= 0xFF
+            self.value = (self.value & ~self.DEPTH_MASK) | ((depth & 0xFF) << self.DEPTH_SHIFT)
+
+        @property
+        def flags(self):
+            return (self.value & self.FLAGS_MASK) >> self.FLAGS_SHIFT
+
+        @flags.setter
+        def flags(self, flags):
+            flags &= 0xFF
+            self.value = (self.value & ~self.FLAGS_MASK) | ((flags & 0xFF) << self.FLAGS_SHIFT)
 
     class Table:
         def __init__(self):
-            self.p_table: Optional[List[Trans.Entry]] = None
+            self.p_table: Optional[List[int]] = None
             self.p_bits: int = 0
             self.p_size: int = 1
             self.p_mask: int = 0
@@ -3601,8 +3699,10 @@ class Trans:
             Allocate the transposition table.
             """
             assert self.p_table is None, "Transposition table already allocated."
-            self.p_table = [Trans.Entry() for _ in range(self.p_size)]
-            self.clear()
+            entry = Trans.Entry.create(lock=0, move=Move.NONE, score=0, date=0, depth=-1, flags=Score.FLAGS_NONE)
+            self.p_table = [entry.value] * self.p_size
+            self.p_date = 1
+            self.p_used = 0
 
         def free(self):
             """
@@ -3616,8 +3716,8 @@ class Trans:
             Clear all entries in the transposition table.
             """
             assert self.p_table is not None, "Transposition table is not allocated."
-            for entry in self.p_table:
-                Trans.clear_entry(entry)
+            entry = Trans.Entry.create(lock=0, move=Move.NONE, score=0, date=0, depth=-1, flags=Score.FLAGS_NONE)
+            self.p_table = [entry.value] * self.p_size
             self.p_date = 1
             self.p_used = 0
 
@@ -3641,18 +3741,20 @@ class Trans:
             index = Hash.index(key) & self.p_mask
             lock = Hash.lock(key)
 
-            best_entry: Optional[Trans.Entry] = None
+            best_index = None
             best_score = -1
 
             for i in range(4):
                 idx = (index + i) & self.p_mask
                 assert idx < self.p_size, "Index out of bounds."
-                entry = self.p_table[idx]
+                entry = Trans.Entry(self.p_table[idx])
 
                 if entry.lock == lock:
                     if entry.date != self.p_date:
                         entry.date = self.p_date
                         self.p_used += 1
+                        # Update the entry in the table
+                        self.p_table[idx] = entry.value
 
                     if depth >= entry.depth:
                         if move != Move.NONE:
@@ -3660,8 +3762,13 @@ class Trans:
                         entry.depth = depth
                         entry.score = score
                         entry.flags = flags
+                        # Update the entry in the table
+                        self.p_table[idx] = entry.value
+
                     elif entry.move == Move.NONE:
                         entry.move = move
+                        # Update the entry in the table
+                        self.p_table[idx] = entry.value
                     return
 
                 sc = 99 - entry.depth  # entry.depth can be -1
@@ -3670,22 +3777,28 @@ class Trans:
                 assert 0 <= sc < 202, "Score calculation out of range."
 
                 if sc > best_score:
-                    best_entry = entry
+                    best_index = idx
                     best_score = sc
 
-            assert best_entry is not None, "No suitable entry found for replacement."
+            assert best_index is not None, "No suitable entry found for replacement."
 
-            if best_entry.date != self.p_date:
+            # Create a new entry and store it
+            best_entry = Trans.Entry.create(
+                lock=lock,
+                move=move,
+                score=score,
+                date=self.p_date,
+                depth=depth,
+                flags=flags
+            )
+
+            old_entry = Trans.Entry(self.p_table[best_index])
+            if old_entry.date != self.p_date:
                 self.p_used += 1
 
-            best_entry.lock = lock
-            best_entry.date = self.p_date
-            best_entry.move = move
-            best_entry.depth = depth
-            best_entry.score = score
-            best_entry.flags = flags
+            self.p_table[best_index] = best_entry.value
 
-        def retrieve(self, key: int, depth: int, ply: int, move: List[int], score: List[int], flags: List[int]) -> bool:
+        def retrieve(self, key: int, depth: int, ply: int) -> tuple:
             """
             Retrieve an entry from the transposition table.
             Returns a tuple (found, move, score, flags).
@@ -3698,32 +3811,31 @@ class Trans:
             for i in range(4):
                 idx = (index + i) & self.p_mask
                 assert idx < self.p_size, "Index out of bounds."
-                entry = self.p_table[idx]
+                entry = Trans.Entry(self.p_table[idx])
 
                 if entry.lock == lock:
                     if entry.date != self.p_date:
                         entry.date = self.p_date
                         self.p_used += 1
+                        # Update the entry in the table
+                        self.p_table[idx] = entry.value
 
-                    move[0] = entry.move
-                    score[0] = Score.from_trans(entry.score, ply)
-                    flags[0] = entry.flags
+                    move = entry.move
+                    score = Score.from_trans(entry.score, ply)
+                    flags = entry.flags
 
                     if entry.depth >= depth:
-                        return True
-                    elif Score.is_mate(score[0]):
-                        if score[0] < 0:
-                            flags[0] &= ~Score.FLAGS_LOWER
-                            assert flags[0] == flags[0] & 0xFFFFFFFFFFFFFFFF
-                            
+                        return True, move, score, flags
+                    elif Score.is_mate(score):
+                        if score < 0:
+                            flags &= ~Score.FLAGS_LOWER
                         else:
-                            flags[0] &= ~Score.FLAGS_UPPER
-                            assert flags[0] == flags[0] & 0xFFFFFFFFFFFFFFFF
-                        return True
+                            flags &= ~Score.FLAGS_UPPER
+                        return True, move, score, flags
 
-                    return False
+                    return False, move, score, flags
 
-            return False
+            return False, Move.NONE, 0, Score.FLAGS_NONE
 
         def used(self) -> int:
             """
@@ -6044,20 +6156,19 @@ class Search:
             trans_depth = 0
 
         key = 0
-        trans_move = [Move.NONE]
+        trans_move = Move.NONE
 
         if use_trans:
             key = bd.key()
-            trans_score = [0]
-            trans_flags = [0]
+            found, trans_move, trans_score, trans_flags = Search.sg.trans.retrieve(key, trans_depth, bd.ply())
 
-            if Search.sg.trans.retrieve(key, trans_depth, bd.ply(), trans_move, trans_score, trans_flags) and not pv_node:
-                if trans_flags[0] == Score.FLAGS_LOWER and trans_score[0] >= beta:
-                    return trans_score[0]
-                if trans_flags[0] == Score.FLAGS_UPPER and trans_score[0] <= alpha:
-                    return trans_score[0]
-                if trans_flags[0] == Score.FLAGS_EXACT:
-                    return trans_score[0]
+            if found and not pv_node:
+                if trans_flags == Score.FLAGS_LOWER and trans_score >= beta:
+                    return trans_score
+                if trans_flags == Score.FLAGS_UPPER and trans_score <= alpha:
+                    return trans_score
+                if trans_flags == Score.FLAGS_EXACT:
+                    return trans_score
 
         # Ply limit
         if bd.ply() >= Search.MAX_PLY:
@@ -6119,15 +6230,15 @@ class Search:
             use_fp = True  # unify FP and QS
 
         # IID (Internal iterative deepening)
-        if pv_node and depth >= 3 and trans_move[0] == Move.NONE:
+        if pv_node and depth >= 3 and trans_move == Move.NONE:
             npv = Search.PV()
             sc = Search.search(sl, depth - 2, alpha, beta, npv)
             if sc > alpha and npv.size() != 0:
-                trans_move[0] = npv.move(0)
+                trans_move = npv.move(0)
 
         # Move loop
         ml_sorted = GenSort.List()
-        ml_sorted.init(depth, bd, attacks, trans_move[0], sl.killer, Search.sg.history, use_fp)
+        ml_sorted.init(depth, bd, attacks, trans_move, sl.killer, Search.sg.history, use_fp)
 
         searched = Gen.List()
 
