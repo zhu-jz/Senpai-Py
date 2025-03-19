@@ -16,8 +16,10 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Condition, Lock
-from typing import List, Optional
+from typing import Callable, Generic, List, Optional, TypeVar
 
+
+T = TypeVar("T")
 
 class Util:
     class Timer:
@@ -121,6 +123,37 @@ class Util:
             self.r.append(new_val)
             self.index += 1
             return new_val >> 1
+    
+    class LazyList(Generic[T]):
+        """
+        A list-like container that lazily initializes elements only when accessed.
+        """
+        def __init__(self, max_size: int, factory: Callable[[], T]):
+            self._max_size = max_size
+            self._factory = factory
+            self._data: List[Optional[T]] = [None] * max_size
+            self._locks: List[threading.Lock] = [threading.Lock() for _ in range(max_size)]
+        
+        def __len__(self) -> int:
+            return self._max_size
+        
+        def __getitem__(self, index: int) -> T:
+            """
+            Get the item at the specified index. Initialize it if it doesn't exist.
+            """
+            if not (0 <= index < self._max_size):
+                raise IndexError(f"Index {index} out of range for LazyList of size {self._max_size}")
+            
+            # Fast path: return item if already initialized to avoid locking
+            item = self._data[index]
+            if item is not None:
+                return item
+
+            # Use a per-element lock to protect initialization
+            with self._locks[index]:
+                if self._data[index] is None:
+                    self._data[index] = self._factory()
+                return self._data[index]
 
     @staticmethod
     def round(x: float) -> int:
@@ -1121,7 +1154,6 @@ class Bit:
     def clear_bit(b: int, n: int) -> int:
         """Clear the nth bit in the bitboard."""
         assert 0 <= n < 64, "Bit index out of range"
-        assert b & ~Bit.bit(n) == b & ~Bit.bit(n) & 0xFFFFFFFFFFFFFFFF
         return b & ~Bit.bit(n)
 
     @staticmethod
@@ -1662,7 +1694,6 @@ class Board:
     
         def pieces(self, sd: int) -> int:
             """Return the bitboard of all pieces for a given side, excluding pawns."""
-            assert self.p_side[sd] & ~self.piece(Piece.PAWN, sd) == self.p_side[sd] & ~self.piece(Piece.PAWN, sd) & 0xFFFFFFFFFFFFFFFF
             return self.p_side[sd] & ~self.piece(Piece.PAWN, sd)
     
         def all_pieces(self) -> int:
@@ -2062,10 +2093,7 @@ class Board:
             self.flip_turn()
     
             # Update castling flags
-            assert self.p_copy.flags & ~Castling.flags_mask[f] == self.p_copy.flags & ~Castling.flags_mask[f] & 0xFFFFFFFFFFFFFFFF
             self.p_copy.flags &= ~Castling.flags_mask[f]
-            
-            assert self.p_copy.flags & ~Castling.flags_mask[t] == self.p_copy.flags & ~Castling.flags_mask[t] & 0xFFFFFFFFFFFFFFFF
             self.p_copy.flags &= ~Castling.flags_mask[t]
     
             # Update en-passant square
@@ -2342,7 +2370,6 @@ class Attack:
         b = bd.all_pieces() & Attack.Blockers[pc][f]
         while b != 0:
             sq = Bit.first(b)
-            assert ts & ~Attack.Behind[f][sq] == ts & ~Attack.Behind[f][sq] & 0xFFFFFFFFFFFFFFFF
             ts &= ~Attack.Behind[f][sq]
             b = Bit.rest(b)
             
@@ -3007,13 +3034,6 @@ class Gen:
                 Gen.add_pawn_move(ml, f, t, bd)
                 promotions = Bit.rest(promotions)
 
-    # @staticmethod
-    # def add_promotions_overload(ml: 'Gen.List', sd: int, bd: 'Board.BOARD'):
-    #     """
-    #     Overloaded function to add promotions without specifying target squares.
-    #     """
-    #     Gen.add_promotions(ml, sd, bd.empty(), bd)
-
     @staticmethod
     def add_pawn_quiets(ml: 'Gen.List', sd: int, ts: int, bd: 'Board.BOARD'):
         """
@@ -3026,7 +3046,6 @@ class Gen:
         if sd == Side.WHITE:
             # Single push
             pushes = (pawns & (ts >> 1) & ~Bit.rank(Square.RANK_7))
-            assert pushes == pushes & 0xFFFFFFFFFFFFFFFF
             
             while pushes != 0:
                 f = Bit.first(pushes)
@@ -3049,7 +3068,6 @@ class Gen:
             # Black side
             # Single push
             pushes = (pawns & (ts << 1) & ~Bit.rank(Square.RANK_2))
-            assert pushes == pushes & 0xFFFFFFFFFFFFFFFF
             
             while pushes != 0:
                 f = Bit.first(pushes)
@@ -3079,12 +3097,9 @@ class Gen:
         if sd == Side.WHITE:
             ts |= Bit.rank(Square.RANK_7)
             ts |= Bit.rank(Square.RANK_6) & ~Attack.pawn_attacks_from(Side.BLACK, bd) & (~bd.piece(Piece.PAWN) >> 1)
-            assert ts == ts & 0xFFFFFFFFFFFFFFFF
-            
         else:
             ts |= Bit.rank(Square.RANK_2)
             ts |= Bit.rank(Square.RANK_3) & ~Attack.pawn_attacks_from(Side.WHITE, bd) & (~bd.piece(Piece.PAWN) << 1)
-            assert ts == ts & 0xFFFFFFFFFFFFFFFF
 
         Gen.add_pawn_quiets(ml, sd, ts & bd.empty(), bd)
 
@@ -3344,15 +3359,12 @@ class Gen:
         pinned = Attack.pinned_by(king, atk, bd)
         empty = bd.empty()
         empty &= ~Attack.pawn_attacks_from(Side.opposit(sd), bd)  # pawn-safe
-        assert empty == empty & 0xFFFFFFFFFFFFFFFF
 
         # Discovered checks
         fs = bd.pieces(atk) & pinned
         while fs != 0:
             f = Bit.first(fs)
             ts = empty & ~Attack.ray(king, f)
-            assert ts == ts & 0xFFFFFFFFFFFFFFFF
-            
             Gen.add_piece_moves_from(ml, f, ts, bd)
             fs = Bit.rest(fs)
 
@@ -3364,7 +3376,6 @@ class Gen:
         pc = Piece.KNIGHT
         attacks = Attack.pseudo_attacks_to(pc, sd, king) & empty
         pieces = bd.piece(pc, sd) & ~pinned
-        assert pieces == pieces & 0xFFFFFFFFFFFFFFFF
         
         while pieces != 0:
             f = Bit.first(pieces)
@@ -3380,7 +3391,6 @@ class Gen:
         for pc in range(Piece.BISHOP, Piece.QUEEN + 1):
             attacks = Attack.pseudo_attacks_to(pc, sd, king) & empty
             pieces = bd.piece(pc, sd) & ~pinned
-            assert pieces == pieces & 0xFFFFFFFFFFFFFFFF
             
             while pieces != 0:
                 f = Bit.first(pieces)
@@ -4019,7 +4029,6 @@ class Pawn:
         """
         fl = Square.file(sq)
         files = Bit.files(fl) & ~Bit.file(fl)
-        assert files == files & 0xFFFFFFFFFFFFFFFF
         
         return (bd.piece(Piece.PAWN, sd) & files) == 0
 
@@ -4195,7 +4204,6 @@ class Pawn:
                         info.target[Side.opposit(sd)] = Bit.set_bit(info.target[Side.opposit(sd)], stop)
 
                 safe[Side.opposit(sd)] &= ~Pawn.potential_attacks(sq, sd, bd)
-                assert safe[Side.opposit(sd)] == safe[Side.opposit(sd)] & 0xFFFFFFFFFFFFFFFF
 
                 # Remove the processed pawn
                 b = Bit.rest(b)
@@ -4209,7 +4217,6 @@ class Pawn:
             info.eg = -info.eg
 
         weak &= ~strong  # Defended doubled pawns are not weak
-        assert weak == weak & 0xFFFFFFFFFFFFFFFF
         
         assert (weak & strong) == 0, "Weak and strong pawns overlap."
 
@@ -4896,7 +4903,6 @@ class Eval:
             king = bd.king(sd)
             ts = Attack.pseudo_attacks_from(Piece.KING, sd, king)
             ai.king_evasions[sd] = ts & ~bd.side(sd) & ~ai.all_attacks[Side.opposit(sd)]
-            assert ai.king_evasions[sd] == ai.king_evasions[sd] & 0xFFFFFFFFFFFFFFFF
 
         # Pinned pieces
         ai.pinned = 0
@@ -5015,8 +5021,6 @@ class Eval:
             return True
 
         king_attacks = Attack.pseudo_attacks_from(Piece.KING, sd, bd.king(sd))
-        
-        assert (front & ~king_attacks) == (front & ~king_attacks) & 0xFFFFFFFFFFFFFFFF
         if (front & ~king_attacks) == 0:
             return True
 
@@ -5120,7 +5124,6 @@ class Eval:
             b = bd.piece(Piece.BISHOP, sd)
 
             # Queenside
-            assert (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) == (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) & 0xFFFFFFFFFFFFFFFF
             if ((bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_A)) == 0 and
                 (bd.piece(Piece.PAWN, xd) & Bit.file(Square.FILE_B)) == 0):
                 prom = Square.A8 if sd == Side.WHITE else Square.A1
@@ -5129,7 +5132,6 @@ class Eval:
                         return 1
 
             # Kingside
-            assert (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) == (bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) & 0xFFFFFFFFFFFFFFFF
             if ((bd.piece(Piece.PAWN, sd) & ~Bit.file(Square.FILE_H)) == 0 and
                 (bd.piece(Piece.PAWN, xd) & Bit.file(Square.FILE_G)) == 0):
                 prom = Square.H8 if sd == Side.WHITE else Square.H1
@@ -5189,7 +5191,6 @@ class Eval:
 
         xd = Side.opposit(sd)
         checks = ts & ~bd.side(sd) & Attack.pseudo_attacks_to(pc, sd, king)
-        assert checks == checks & 0xFFFFFFFFFFFFFFFF
 
         if not Piece.is_slider(pc):
             return Bit.count(checks)
@@ -5200,7 +5201,6 @@ class Eval:
         b = checks & Attack.pseudo_attacks_to(Piece.KING, xd, king)
         n += Bit.count(b) * 2
         checks &= ~b
-        assert checks == checks & 0xFFFFFFFFFFFFFFFF
 
         # Sliding Checks
         while checks != 0:
@@ -5311,7 +5311,6 @@ class Eval:
                             inner_b = Bit.rest(inner_b)
 
                     ts_safe = ts_pawn_safe & ~ai.lt_attacks[xd][pc] & safe
-                    assert ts_safe == ts_safe & 0xFFFFFFFFFFFFFFFF
 
                     mg += PST.score(p12, sq, Stage.MG)
                     eg += PST.score(p12, sq, Stage.EG)
@@ -6059,7 +6058,7 @@ class Search:
                         Move.is_pawn_push(mv, bd))
             
             ext = Search.extension(sl, mv, depth, pv_node)
-            red = Search.reduction(sl, mv, depth, pv_node, in_check, searched_size, dangerous)
+            red = Search.reduction(depth, searched_size, dangerous)
             if ext != 0:
                 red = 0
             assert ext == 0 or red == 0, "Extension and reduction conflict"
@@ -6267,7 +6266,7 @@ class Search:
                 continue  # late-move pruning
 
             ext = Search.extension(sl, mv, depth, pv_node)
-            red = Search.reduction(sl, mv, depth, pv_node, in_check, searched.size(), dangerous)
+            red = Search.reduction(depth, searched.size(), dangerous)
 
             if ext != 0:
                 red = 0
@@ -6424,7 +6423,7 @@ class Search:
                          Move.is_pawn_push(mv, bd))
 
             ext = Search.extension(sl, mv, depth, pv_node)
-            red = Search.reduction(sl, mv, depth, pv_node, in_check, searched_size, dangerous)
+            red = Search.reduction(depth, searched_size, dangerous)
 
             if ext != 0:
                 red = 0
@@ -6605,7 +6604,7 @@ class Search:
             return 0
 
     @staticmethod
-    def reduction(sl: 'Search.SearchLocal', mv: int, depth: int, pv_node: bool, in_check: bool, searched_size: int, dangerous: bool) -> int:
+    def reduction(depth: int, searched_size: int, dangerous: bool) -> int:
         red = 0
 
         if depth >= 3 and searched_size >= 3 and not dangerous:
@@ -6872,12 +6871,13 @@ class Search:
         cls.best = cls.Best()
         cls.sg = cls.SearchGlobal()
         cls.smp = cls.SMP()
-        cls.p_sl = [cls.SearchLocal() for _ in range(cls.MAX_THREADS)]
+        cls.p_sl = Util.LazyList[cls.SearchLocal](max_size=cls.MAX_THREADS, factory=cls.SearchLocal)
         cls.root_sp = cls.SplitPoint()
 
         cls.sg.trans.set_size(Engine.engine.hash_size)
         cls.sg.trans.alloc()
-    
+
+
 class UCI:
     bd: 'Board.BOARD' = Board.BOARD()
     infinite: bool = False
