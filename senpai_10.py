@@ -7048,7 +7048,7 @@ class UCI:
 
             Search.new_search()
 
-            infinite = False
+            UCI.infinite = False
             UCI.delay = False
 
             smart = False
@@ -7063,7 +7063,7 @@ class UCI:
                 args = scan.get_args()
 
                 if part == "ponder":
-                    infinite = True
+                    UCI.infinite = True
                     Search.set_ponder()
                 elif part == "wtime":
                     if UCI.bd.turn() == Side.WHITE:
@@ -7091,14 +7091,14 @@ class UCI:
                 elif part == "movetime":
                     Search.set_time_limit(int(Util.to_int(args)))
                 elif part == "infinite":
-                    infinite = True
+                    UCI.infinite = True
 
             if smart:
                 Search.search_smart(UCI.bd, movestogo, time, inc)
             else:
                 Search.search_dumb(UCI.bd)
 
-            if infinite:  # Implementing the UCI-design mistake
+            if UCI.infinite:  # Implementing the UCI-design mistake
                 UCI.delay = True
             else:
                 UCI.send_bestmove()
