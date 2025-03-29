@@ -1,6 +1,5 @@
 """
-Senpai 1.0
-
+Senpai 1.0 
 Copyright (C) 2014 Fabien Letouzey.
 Copyright (C) 2025 Jianzhao Zhu (translation to Python).
 
@@ -32,35 +31,58 @@ from threading import Condition, Lock
 from typing import Callable, Generic, List, Optional, TypeVar
 
 
+# Generic type variable used for the LazyList class.
 T = TypeVar("T")
 
 class Util:
+    """
+    Provides various utility functions and classes used throughout the engine.
+    Includes timing, locking, random number generation, type conversions,
+    and basic math operations.
+    """
     class Timer:
+        """
+        A simple timer class to measure elapsed time.
+        """
         def __init__(self):
+            """Initializes the timer, resetting its state."""
             self.reset()
 
         def reset(self):
-            self.p_elapsed: int = 0  # milliseconds
-            self.p_running: bool = False
-            self.p_start: Optional[float] = None
+            """Resets the timer's elapsed time and running state."""
+            self.p_elapsed: int = 0  # Total elapsed time in milliseconds when stopped
+            self.p_running: bool = False # Flag indicating if the timer is currently running
+            self.p_start: Optional[float] = None # Start time in seconds since epoch
 
         def _now(self) -> float:
-            """Get the current time in seconds since the epoch."""
+            """
+            Get the current time in seconds since the epoch.
+            Internal helper method.
+
+            Returns:
+                float: The current time.
+            """
             return time.time()
-        
+
         def _time(self) -> int:
-            """Calculate elapsed time in milliseconds since the timer was started."""
+            """
+            Calculate elapsed time in milliseconds since the timer was last started.
+            Internal helper method. Assumes p_start is set.
+
+            Returns:
+                int: Elapsed time in milliseconds.
+            """
             current = self._now()
             elapsed_seconds = current - self.p_start
             return int(elapsed_seconds * 1000)
 
         def start(self):
-            """Start the timer."""
+            """Starts or restarts the timer."""
             self.p_start = self._now()
             self.p_running = True
 
         def stop(self):
-            """Stop the timer and accumulate the elapsed time."""
+            """Stops the timer and adds the elapsed duration to the total."""
             if self.p_running:
                 elapsed = self._time()
                 self.p_elapsed += elapsed
@@ -69,7 +91,10 @@ class Util:
         def elapsed(self) -> int:
             """
             Get the total elapsed time in milliseconds.
-            If the timer is running, include the time since it was last started.
+            If the timer is currently running, it includes the time since the last start.
+
+            Returns:
+                int: Total elapsed time in milliseconds.
             """
             total = self.p_elapsed
             if self.p_running:
@@ -77,34 +102,54 @@ class Util:
             return total
 
     class Lockable:
+        """
+        A base class providing simple mutex locking functionality.
+        Wraps Python's threading.Lock.
+        """
         def __init__(self):
+            """Initializes the mutex."""
             self.p_mutex = Lock()
 
         def lock(self):
-            """Acquire the mutex lock."""
+            """Acquires the mutex lock. Blocks until the lock is available."""
             self.p_mutex.acquire()
 
         def unlock(self):
-            """Release the mutex lock."""
+            """Releases the mutex lock."""
             self.p_mutex.release()
 
     class Waitable(Lockable):
+        """
+        Extends Lockable with condition variable functionality for waiting and signaling.
+        Wraps Python's threading.Condition.
+        """
         def __init__(self):
+            """Initializes the mutex and condition variable."""
             super().__init__()
+            # The Condition object uses the Lock from the Lockable base class.
             self.p_cond = Condition(self.p_mutex)
 
         def wait(self):
             """
-            Wait for a condition to be signaled.
-            Assumes that the mutex lock has already been acquired.
+            Waits for a condition to be signaled.
+            Must be called only after acquiring the lock using self.lock().
+            Releases the lock while waiting and reacquires it before returning.
             """
             self.p_cond.wait()
 
         def signal(self):
-            """Notify one waiting thread."""
+            """
+            Signals one waiting thread that the condition may have changed.
+            Must be called only after acquiring the lock using self.lock().
+            """
             self.p_cond.notify()
 
     class GlibcRand:
+        """
+        Implements the pseudo-random number generator algorithm used in GLIBC's `rand()`.
+        Uses a linear congruential generator for the initial state and then a more
+        complex additive feedback generator.
+        """
         def __init__(self, seed: int = 1) -> None:
             """
             Initialize the state for the GLIBC random() algorithm.
@@ -113,117 +158,240 @@ class Util:
             for i in 1..30:  r[i] = (16807 * r[i-1]) % 2147483647
             for i in 31..33: r[i] = r[i-31]
             for i in 34..343: r[i] = (r[i-31] + r[i-3]) mod 2^32
+
+            Args:
+                seed (int): The initial seed value. Defaults to 1.
             """
-            self.r: list[int] = [0] * 344  # Pre-allocate state list for indices 0 to 343
+            self.r: list[int] = [0] * 344  # State array for the generator (indices 0 to 343)
             self.r[0] = seed
+            # Initialize the first 31 elements using a linear congruential generator
             for i in range(1, 31):
-                self.r[i] = (16807 * self.r[i - 1]) % 2147483647
+                self.r[i] = (16807 * self.r[i - 1]) % 2147483647 # Using Park-Miller LCG constants
+            # Initialize elements 31 to 33 by copying earlier values
             for i in range(31, 34):
                 self.r[i] = self.r[i - 31]
+            # Initialize the rest of the state using the additive feedback formula
             for i in range(34, 344):
-                self.r[i] = (self.r[i - 31] + self.r[i - 3]) & 0xFFFFFFFF  # modulo 2^32
+                # Addition modulo 2^32 (achieved using bitwise AND with 0xFFFFFFFF)
+                self.r[i] = (self.r[i - 31] + self.r[i - 3]) & 0xFFFFFFFF
 
-            self.index: int = 344  # Next index to compute
+            # Index points to the next position in the state array to compute.
+            # It starts at 344 because the initial state goes up to index 343.
+            self.index: int = 344
 
         def rand(self) -> int:
             """
-            Compute the next pseudo-random number.
+            Compute the next pseudo-random number using the GLIBC algorithm.
             The algorithm computes:
                 new_val = (r[index-31] + r[index-3]) mod 2^32,
-            appends it to the state, and returns new_val >> 1 (a 31-bit value).
+            appends it to the state, increments the index, and returns
+            new_val >> 1 (effectively a 31-bit pseudo-random value).
+
+            Returns:
+                int: The next 31-bit pseudo-random integer.
             """
+            # Calculate the next value using the additive feedback formula (modulo 2^32)
             new_val: int = (self.r[self.index - 31] + self.r[self.index - 3]) & 0xFFFFFFFF
+            # Append the new value to the state list (dynamically growing)
             self.r.append(new_val)
+            # Increment the index to point to the next position
             self.index += 1
+            # Return the upper 31 bits of the new value
             return new_val >> 1
-    
+
     class LazyList(Generic[T]):
         """
         A list-like container that lazily initializes elements only when accessed.
+        Useful for large tables where only a fraction of elements might be used.
+        Thread-safe for initialization.
+
+        Args:
+            Generic (T): The type of elements stored in the list.
         """
         def __init__(self, max_size: int, factory: Callable[[], T]):
+            """
+            Initializes the LazyList.
+
+            Args:
+                max_size (int): The fixed maximum size of the list.
+                factory (Callable[[], T]): A function that takes no arguments and returns
+                                          a new instance of the element type T.
+            """
             self._max_size = max_size
             self._factory = factory
+            # Initialize data list with None placeholders
             self._data: List[Optional[T]] = [None] * max_size
+            # Create a list of locks, one for each potential element, for thread-safety
             self._locks: List[threading.Lock] = [threading.Lock() for _ in range(max_size)]
-        
+
         def __len__(self) -> int:
+            """
+            Returns the maximum size of the list.
+
+            Returns:
+                int: The maximum size.
+            """
             return self._max_size
-        
+
         def __getitem__(self, index: int) -> T:
             """
-            Get the item at the specified index. Initialize it if it doesn't exist.
+            Get the item at the specified index. Initializes it using the factory
+            if it hasn't been accessed before. Thread-safe.
+
+            Args:
+                index (int): The index of the element to retrieve.
+
+            Returns:
+                T: The element at the specified index.
+
+            Raises:
+                IndexError: If the index is out of the valid range [0, max_size - 1].
             """
             if not (0 <= index < self._max_size):
                 raise IndexError(f"Index {index} out of range for LazyList of size {self._max_size}")
-            
-            # Fast path: return item if already initialized to avoid locking
+
+            # Fast path: Check if already initialized without locking
             item = self._data[index]
             if item is not None:
                 return item
 
-            # Use a per-element lock to protect initialization
+            # Slow path: Acquire the lock for this specific index
             with self._locks[index]:
+                # Double-check if another thread initialized it while waiting for the lock
                 if self._data[index] is None:
+                    # Initialize the element using the provided factory function
                     self._data[index] = self._factory()
+                # Return the (now guaranteed to be initialized) element
                 return self._data[index]
 
     @staticmethod
     def round(x: float) -> int:
-        """Round a floating-point number to the nearest integer."""
+        """
+        Round a floating-point number to the nearest integer (rounds .5 up).
+
+        Args:
+            x (float): The number to round.
+
+        Returns:
+            int: The nearest integer.
+        """
+        # math.floor(x + 0.5) implements rounding half up
         return int(math.floor(x + 0.5))
 
     @staticmethod
     def div(a: int, b: int) -> int:
         """
-        Perform integer division with flooring.
-        In C++, integer division truncates towards zero (like rounding towards 0)
-        In Python, integer division always rounds down (towards negative infinity)
+        Perform integer division rounding towards negative infinity (floor division).
+        This matches Python's `//` operator behavior but differs from C++'s
+        integer division which truncates towards zero.
+
+        Args:
+            a (int): The dividend.
+            b (int): The divisor. Must be positive.
+
+        Returns:
+            int: The result of floor division `a // b`.
+
+        Raises:
+            AssertionError: If the divisor `b` is not positive.
         """
         assert b > 0, "Divider must be positive"
         return a // b
 
     @staticmethod
     def sqrt(n: int) -> int:
-        """Calculate the integer square root of a number."""
+        """
+        Calculate the integer square root of a non-negative number (floor of the actual square root).
+
+        Args:
+            n (int): The number to find the square root of. Must be non-negative.
+
+        Returns:
+            int: The largest integer `i` such that `i*i <= n`.
+        """
+        # Convert to float for math.sqrt, then back to int (truncates)
         return int(math.sqrt(float(n)))
 
     @staticmethod
     def is_square(n: int) -> bool:
-        """Check if a number is a perfect square."""
+        """
+        Check if a non-negative integer is a perfect square.
+
+        Args:
+            n (int): The number to check. Must be non-negative.
+
+        Returns:
+            bool: True if `n` is a perfect square, False otherwise.
+        """
+        if n < 0: return False # Perfect squares cannot be negative
         i = Util.sqrt(n)
         return i * i == n
-    
+
+    # Static instance of the random number generator, initialized later in init()
+    rng: 'Util.GlibcRand' = None
+
     @staticmethod
     def rand_float() -> float:
-        """Generate a random floating-point number in the range [0.0, 1.0)."""
+        """
+        Generate a random floating-point number in the range [0.0, 1.0)
+        using the initialized GLIBC random number generator.
+
+        Returns:
+            float: A random float between 0.0 (inclusive) and 1.0 (exclusive).
+        """
+        # GLIBC rand() returns a 31-bit integer (max 2^31 - 1 = 2147483647).
+        # Dividing by 2^31 gives a float in [0, 1).
         return Util.rng.rand() / 2147483648.0
 
     @staticmethod
     def rand_int(n: int) -> int:
         """
-        Generate a random integer in the range [0, n).
-        Asserts that n is positive.
+        Generate a random integer in the range [0, n) using `rand_float`.
+
+        Args:
+            n (int): The upper bound (exclusive). Must be positive.
+
+        Returns:
+            int: A random integer `i` such that `0 <= i < n`.
+
+        Raises:
+            AssertionError: If `n` is not positive.
         """
         assert n > 0, "n must be positive"
+        # Multiply the random float [0, 1) by n and take the floor (implicit in int conversion)
         return int(Util.rand_float() * n)
 
     @staticmethod
     def string_find(s: str, c: str) -> int:
         """
-        Find the index of character `c` in string `s`.
-        Returns -1 if `c` is not found.
+        Find the first index of character `c` in string `s`.
+        Equivalent to Python's `str.find()`.
+
+        Args:
+            s (str): The string to search within.
+            c (str): The character to find (should be a single character).
+
+        Returns:
+            int: The index of the first occurrence of `c`, or -1 if not found.
         """
         return s.find(c)
 
     @staticmethod
     def string_case_equal(s0: str, s1: str) -> bool:
         """
-        Compare two strings for case-insensitive equality.
-        Returns True if they are equal (ignoring case), else False.
+        Compare two strings for equality, ignoring case.
+
+        Args:
+            s0 (str): The first string.
+            s1 (str): The second string.
+
+        Returns:
+            bool: True if the strings are equal ignoring case, False otherwise.
         """
+        # Optimization: if lengths differ, they can't be equal
         if len(s0) != len(s1):
             return False
+        # Compare character by character, converting both to lowercase
         for a, b in zip(s0, s1):
             if a.lower() != b.lower():
                 return False
@@ -232,323 +400,747 @@ class Util:
     @staticmethod
     def to_bool(s: str) -> bool:
         """
-        Convert a string to a boolean.
-        Accepts "true" or "false" (case-insensitive).
-        Exits the program if the input is invalid.
+        Convert a string ("true" or "false", case-insensitive) to a boolean.
+        Exits the program with an error message if the input string is invalid.
+
+        Args:
+            s (str): The string to convert.
+
+        Returns:
+            bool: True if the string is "true" (case-insensitive), False if "false".
+
+        Raises:
+            SystemExit: If the string is neither "true" nor "false".
         """
         if Util.string_case_equal(s, "true"):
             return True
         elif Util.string_case_equal(s, "false"):
             return False
         else:
-            print(f'not a boolean: "{s}"', file=sys.stderr)
+            # Error handling: print message to stderr and exit
+            print(f'Error: Input string "{s}" is not a valid boolean ("true" or "false").', file=sys.stderr)
             sys.exit(1)
 
     @staticmethod
     def to_int(s: str) -> int:
         """
         Convert a string to an integer.
-        Exits the program if the conversion fails.
+        Exits the program with an error message if the conversion fails.
+
+        Args:
+            s (str): The string to convert.
+
+        Returns:
+            int: The integer value represented by the string.
+
+        Raises:
+            SystemExit: If the string cannot be converted to an integer.
         """
         try:
             return int(s)
         except ValueError:
-            print(f'Error converting to int: "{s}"', file=sys.stderr)
+            # Error handling: print message to stderr and exit
+            print(f'Error: Cannot convert string "{s}" to an integer.', file=sys.stderr)
             sys.exit(1)
 
     @staticmethod
     def to_string(n: int) -> str:
-        """Convert an integer to its string representation."""
+        """
+        Convert an integer to its string representation.
+
+        Args:
+            n (int): The integer to convert.
+
+        Returns:
+            str: The string representation of the integer.
+        """
         return str(n)
 
     @staticmethod
     def to_string_double(x: float) -> str:
-        """Convert a floating-point number to its string representation."""
+        """
+        Convert a floating-point number to its string representation.
+
+        Args:
+            x (float): The float to convert.
+
+        Returns:
+            str: The string representation of the float.
+        """
         return str(x)
 
     @staticmethod
     def log(s: str):
         """
-        Append a string to the log file.
-        Each entry is written on a new line.
+        Append a string message to the log file ("log.txt").
+        Each message is written on a new line. Creates the file if it doesn't exist.
+
+        Args:
+            s (str): The message string to log.
         """
+        # Open "log.txt" in append mode ('a')
         with open("log.txt", "a") as log_file:
-            log_file.write(s + "\n")
+            log_file.write(s + "\n") # Append the message and a newline
 
     @classmethod
     def init(cls):
-        """Initialize the Util class."""
+        """
+        Initialize the Util class, specifically the random number generator.
+        Must be called before using `rand_float` or `rand_int`.
+        """
+        # Initialize the static RNG instance with a default seed of 1.
         cls.rng = cls.GlibcRand(seed=1)
 
 
 class Input:
-    class INPUT(Util.Waitable):    
+    """
+    Handles asynchronous input from stdin using a separate thread.
+    Provides methods to get lines of input without blocking the main engine thread.
+    Uses a Waitable condition variable for synchronization between the input thread
+    and the main thread consuming the input.
+    """
+    class INPUT(Util.Waitable):
+        """
+        Internal class managing the input buffer and synchronization state.
+        Inherits from Util.Waitable for locking and condition variables.
+        """
         def __init__(self):
+            """Initializes the input state."""
             super().__init__()
-            self.p_has_input = False
-            self.p_eof = False
-            self.p_line = ""
-    
+            self.p_has_input: bool = False # Flag: Is there a line available in p_line?
+            self.p_eof: bool = False       # Flag: Has end-of-file been reached on stdin?
+            self.p_line: str = ""          # Buffer for the last read line
+
         def has_input(self) -> bool:
-            """Check if there is input available."""
+            """
+            Check if there is input available (non-blocking).
+
+            Returns:
+                bool: True if a line is available or EOF has been reached, False otherwise.
+            """
+            # No lock needed for reading a boolean flag (atomicity assumed)
             return self.p_has_input
-    
+
         def get_line(self) -> tuple[bool, str]:
             """
-            Retrieve a line of input.
-            Blocks until input is available.
-            Returns a tuple (line_ok, line), where:
-                - line_ok is False if EOF has been reached.
-                - line contains the input line if available.
+            Retrieve the next line of input. Blocks if no input is currently available.
+            This method is called by the consumer thread (e.g., UCI loop).
+
+            Returns:
+                tuple[bool, str]: A tuple where:
+                    - The first element (bool) is True if a line was successfully read,
+                      False if EOF was reached.
+                    - The second element (str) is the line read (if successful), or
+                      an empty string if EOF was reached.
             """
-            self.lock()
+            self.lock() # Acquire the lock before accessing shared state
             try:
+                # Wait while there's no input available (p_has_input is False)
                 while not self.p_has_input:
-                    self.wait()
-    
-                line_ok = not self.p_eof
+                    self.wait() # Releases lock, waits for signal, reacquires lock
+
+                # Input is now available (or EOF)
+                line_ok = not self.p_eof # True if not EOF
                 if line_ok:
-                    line = self.p_line
+                    line = self.p_line # Get the buffered line
                 else:
-                    line = ''
-    
+                    line = '' # Return empty string on EOF
+
+                # Reset the flag to indicate the line has been consumed
                 self.p_has_input = False
+                # Signal the input thread (if it's waiting in set_line/set_eof)
+                # that the buffer is now free.
                 self.signal()
                 return (line_ok, line)
             finally:
-                self.unlock()
-    
+                self.unlock() # Release the lock
+
         def set_eof(self):
-            """Set the end-of-file flag and notify waiting threads."""
-            self.lock()
+            """
+            Marks the end-of-file condition. Called by the input thread when stdin closes.
+            Notifies any waiting consumer thread.
+            """
+            self.lock() # Acquire lock
             try:
+                # Wait if the consumer hasn't processed the previous line yet
                 while self.p_has_input:
                     self.wait()
-    
+
+                # Set EOF flag and indicate input is "available" (the EOF signal)
                 self.p_eof = True
                 self.p_has_input = True
+                # Signal the consumer thread (if it's waiting in get_line)
                 self.signal()
             finally:
-                self.unlock()
-    
+                self.unlock() # Release lock
+
         def set_line(self, line: str):
-            """Set a new line of input and notify waiting threads."""
-            self.lock()
+            """
+            Sets a new line of input read from stdin. Called by the input thread.
+            Notifies any waiting consumer thread.
+
+            Args:
+                line (str): The line read from stdin.
+            """
+            self.lock() # Acquire lock
             try:
+                # Wait if the consumer hasn't processed the previous line yet
                 while self.p_has_input:
                     self.wait()
-    
+
+                # Store the new line and mark input as available
                 self.p_line = line
                 self.p_has_input = True
+                # Signal the consumer thread (if it's waiting in get_line)
                 self.signal()
             finally:
-                self.unlock()
-    
+                self.unlock() # Release lock
+
+    # Static instance of the internal INPUT class
+    input_instance: 'Input.INPUT' = None
+    # Static reference to the input reader thread
+    input_thread: threading.Thread = None
+
     @staticmethod
-    def input_program(input_obj):
+    def input_program(input_obj: 'Input.INPUT'):
         """
-        Function to run in a separate thread.
-        Continuously reads lines from standard input and passes them to the INPUT instance.
+        The target function for the input reader thread.
+        Continuously reads lines from standard input (sys.stdin) and passes
+        them to the shared INPUT instance using `set_line`.
+        Calls `set_eof` when stdin is closed.
+
+        Args:
+            input_obj (Input.INPUT): The shared INPUT instance to communicate with.
         """
-        for line in sys.stdin:
-            input_obj.set_line(line.rstrip('\n'))
-        input_obj.set_eof()
-    
+        try:
+            # Read lines from stdin until EOF
+            for line in sys.stdin:
+                # Pass the read line (stripping trailing newline) to the shared object
+                input_obj.set_line(line.rstrip('\n'))
+            # Signal EOF when stdin closes
+            input_obj.set_eof()
+        except Exception as e:
+            # Handle potential errors during input reading (optional)
+            print(f"Error in input thread: {e}", file=sys.stderr)
+            input_obj.set_eof() # Ensure EOF is signaled even on error
+
     @classmethod
     def init(cls):
         """
-        Initialize the input handling by starting the input thread.
-        This should be called at the beginning of the program.
+        Initializes the input handling system.
+        Creates the shared INPUT instance and starts the background input reader thread.
+        This should be called once at the beginning of the program.
         """
         cls.input_instance = cls.INPUT()
+        # Create the thread, targeting the input_program function
         cls.input_thread = threading.Thread(target=cls.input_program, args=(cls.input_instance,))
-        cls.input_thread.daemon = True  # Daemonize thread to exit with the main program
+        # Set as daemon so the thread doesn't prevent program exit
+        cls.input_thread.daemon = True
         cls.input_thread.start()
 
 
 class Side:
-    SIZE = 2
-    WHITE = 0
-    BLACK = 1
+    """
+    Represents the two sides in a chess game: White and Black.
+    Provides constants and a utility function to get the opposite side.
+    """
+    SIZE = 2    # Number of sides
+    WHITE = 0   # Constant for White side
+    BLACK = 1   # Constant for Black side
 
     @staticmethod
     def opposit(sd: int) -> int:
-        """Return the opposite side."""
+        """
+        Return the opposite side.
+
+        Args:
+            sd (int): The side (Side.WHITE or Side.BLACK).
+
+        Returns:
+            int: The opposite side (Side.BLACK if sd is Side.WHITE, and vice versa).
+        """
+        # XORing with 1 flips the last bit (0 becomes 1, 1 becomes 0)
         return sd ^ 1
 
 
 class Square:
-    FILE_SIZE = 8
-    RANK_SIZE = 8
-    SIZE = FILE_SIZE * RANK_SIZE
-    
-    # Files
+    """
+    Represents squares on the chessboard and provides related constants and functions.
+    Squares are represented internally as integers from 0 (A1) to 63 (H8).
+    Also includes utilities for 0x88 representation conversion and algebraic notation.
+    """
+    # Board dimensions
+    FILE_SIZE = 8 # Number of files (columns)
+    RANK_SIZE = 8 # Number of ranks (rows)
+    SIZE = FILE_SIZE * RANK_SIZE # Total number of squares (64)
+
+    # File constants (A=0, B=1, ..., H=7)
     FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H = range(8)
-    
-    # Ranks
+
+    # Rank constants (1=0, 2=1, ..., 8=7)
     RANK_1, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8 = range(8)
-    
-    # Squares (A1 to H8)
-    NONE = -1
-    A1, A2, A3, A4, A5, A6, A7, A8, \
-    B1, B2, B3, B4, B5, B6, B7, B8, \
-    C1, C2, C3, C4, C5, C6, C7, C8, \
-    D1, D2, D3, D4, D5, D6, D7, D8, \
-    E1, E2, E3, E4, E5, E6, E7, E8, \
-    F1, F2, F3, F4, F5, F6, F7, F8, \
-    G1, G2, G3, G4, G5, G6, G7, G8, \
-    H1, H2, H3, H4, H5, H6, H7, H8 = range(64)
 
-    INC_LEFT = -8
-    INC_RIGHT = +8
+    # Special square value
+    NONE = -1 # Represents an invalid or non-existent square
 
-    CASTLING_DELTA = 16
-    DOUBLE_PAWN_DELTA = 2
-    
+    # Individual square constants (0-63)
+    # Generated dynamically for brevity
+    _squares = {f"{chr(ord('A')+fl)}{rk+1}": (fl << 3) | rk for fl in range(8) for rk in range(8)}
+    locals().update(_squares)
+    # Example: A1=0, H1=56, A8=7, H8=63
+
+    # Increments used for horizontal movement in the 0-63 representation
+    INC_LEFT = -8  # Moving one file left (e.g., from C3 to B3) decreases index by 8
+    INC_RIGHT = +8 # Moving one file right (e.g., from C3 to D3) increases index by 8
+
+    # Special deltas for move encoding/decoding
+    CASTLING_DELTA = 16 # Difference between king's start and end square index in castling (abs(E1-C1)=16, abs(E1-G1)=16)
+    DOUBLE_PAWN_DELTA = 2 # Difference between pawn's start and end rank index in a double push
+
     @staticmethod
     def make(fl: int, rk: int, sd: int = None) -> int:
-        """Create a square from file and rank, optionally adjusted by side."""
-        assert fl < 8, f"File {fl} out of range"
-        assert rk < 8, f"Rank {rk} out of range"
+        """
+        Create a square index (0-63) from file (0-7) and rank (0-7).
+        Optionally adjusts the rank based on the side (for side-relative ranks).
+
+        Args:
+            fl (int): File index (0=A, ..., 7=H).
+            rk (int): Rank index (0=1, ..., 7=8).
+            sd (int, optional): Side (Side.WHITE or Side.BLACK). If provided,
+                                the rank is interpreted relative to this side's
+                                perspective (e.g., rank 0 is rank 1 for White, rank 8 for Black).
+                                Defaults to None (absolute rank).
+
+        Returns:
+            int: The square index (0-63).
+
+        Raises:
+            AssertionError: If file or rank is out of range [0, 7].
+        """
+        assert 0 <= fl < 8, f"File {fl} out of range [0, 7]"
+        assert 0 <= rk < 8, f"Rank {rk} out of range [0, 7]"
 
         if sd is None:
+            # Absolute rank: (file * 8) + rank
             return (fl << 3) | rk
         else:
-            return Square.make(fl, (rk ^ -sd) & 7)
+            # Side-relative rank: Adjust rank based on side before calculating index
+            # For Black (sd=1), rank `rk` becomes `7 - rk`.
+            # `(rk ^ -sd) & 7` achieves this:
+            # - If sd=0 (WHITE): -sd=0, rk ^ 0 = rk. rk & 7 = rk.
+            # - If sd=1 (BLACK): -sd=-1 (0b...111), rk ^ -1 flips bits.
+            #   If rk=0..7, rk^-1 is -1..-8. & 7 gives 7..0.
+            adjusted_rk = (rk ^ -sd) & 7
+            return Square.make(fl, adjusted_rk) # Call recursively with absolute rank
 
     @staticmethod
     def file(sq: int) -> int:
-        """Get the file of the square."""
+        """
+        Get the file index (0-7) of the square.
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            int: The file index (0=A, ..., 7=H).
+        """
+        # Integer division by 8 gives the file index
         return sq >> 3
 
     @staticmethod
     def rank(sq: int, sd: int = None) -> int:
-        """Get the rank of the square, optionally adjusted by side."""
+        """
+        Get the rank index (0-7) of the square.
+        Optionally adjusts the rank based on the side (side-relative rank).
+
+        Args:
+            sq (int): The square index (0-63).
+            sd (int, optional): Side (Side.WHITE or Side.BLACK). If provided,
+                                returns the rank relative to this side's perspective.
+                                Defaults to None (absolute rank).
+
+        Returns:
+            int: The rank index (0=1, ..., 7=8), possibly side-relative.
+        """
+        absolute_rk = sq & 7 # Modulo 8 gives the absolute rank index
         if sd is None:
-            return sq & 7
+            return absolute_rk
         else:
-            return (sq ^ -sd) & 7
+            # Convert absolute rank to side-relative rank (see make() for explanation)
+            return (absolute_rk ^ -sd) & 7
 
     @staticmethod
     def opposit_file(sq: int) -> int:
-        """Get the opposite file."""
-        return sq ^ 0o70  # 070 in octal is 56 in decimal
+        """
+        Get the square on the opposite file (mirrored horizontally).
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            int: The index of the square on the opposite file.
+        """
+        # XORing with 0o70 (octal for 56, binary 0b0111000) flips the file bits (bits 3, 4, 5)
+        # while keeping the rank bits (0, 1, 2) the same.
+        # Example: A1 (0) -> H1 (56), B2 (9) -> G2 (49)
+        return sq ^ 0o70
 
     @staticmethod
     def opposit_rank(sq: int) -> int:
-        """Get the opposite rank."""
-        return sq ^ 0o07  # 007 in octal is 7 in decimal
+        """
+        Get the square on the opposite rank (mirrored vertically).
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            int: The index of the square on the opposite rank.
+        """
+        # XORing with 0o07 (octal for 7, binary 0b0000111) flips the rank bits (bits 0, 1, 2)
+        # while keeping the file bits (3, 4, 5) the same.
+        # Example: A1 (0) -> A8 (7), H2 (57) -> H7 (62)
+        return sq ^ 0o07
 
     @staticmethod
     def is_promotion(sq: int) -> bool:
-        """Check if the square is a promotion rank."""
-        rk = Square.rank(sq)
+        """
+        Check if the square is on the first or eighth rank (promotion ranks).
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            bool: True if the square is on rank 1 or rank 8, False otherwise.
+        """
+        rk = Square.rank(sq) # Get absolute rank
         return rk == Square.RANK_1 or rk == Square.RANK_8
 
     @staticmethod
     def colour(sq: int) -> int:
-        """Determine the colour of the square."""
-        return ((sq >> 3) ^ sq) & 1
+        """
+        Determine the colour of the square (0 for dark, 1 for light).
+        Assumes A1 is dark (0).
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            int: 0 if the square is dark, 1 if it is light.
+        """
+        # The color depends on the parity of (file + rank).
+        # (sq >> 3) is the file, (sq & 7) is the rank.
+        # XORing file and rank gives a number whose last bit is 1 iff
+        # file and rank have different parity.
+        # Example: A1 (0,0) -> 0^0=0 (dark). H8 (7,7) -> 7^7=0 (dark).
+        #          A2 (0,1) -> 0^1=1 (light). H1 (7,0) -> 7^0=7 (light).
+        return ((sq >> 3) ^ (sq & 7)) & 1 # Check parity of file XOR rank
 
     @staticmethod
     def same_colour(s0: int, s1: int) -> bool:
-        """Check if two squares are the same colour."""
+        """
+        Check if two squares have the same colour.
+
+        Args:
+            s0 (int): Index of the first square (0-63).
+            s1 (int): Index of the second square (0-63).
+
+        Returns:
+            bool: True if both squares have the same colour, False otherwise.
+        """
+        # Two squares have the same color iff the parity of (file0 + rank0)
+        # is the same as the parity of (file1 + rank1).
+        # This is equivalent to checking if the parity of
+        # ((file0 + rank0) + (file1 + rank1)) is even.
+        # Parity(a+b) = Parity(a) ^ Parity(b).
+        # Parity(file+rank) = Parity(file) ^ Parity(rank).
+        # So, check Parity(file0^rank0) == Parity(file1^rank1)
+        # which is Parity((file0^rank0)^(file1^rank1)) == 0
+        # which is Parity((file0^file1)^(rank0^rank1)) == 0
+        # Let diff = s0 ^ s1. file_diff = diff >> 3, rank_diff = diff & 7.
+        # Check Parity(file_diff ^ rank_diff) == 0.
         diff = s0 ^ s1
-        return (((diff >> 3) ^ diff) & 1) == 0
+        # Check if the parity of (file difference XOR rank difference) is 0.
+        return (((diff >> 3) ^ (diff & 7)) & 1) == 0
 
     @staticmethod
     def same_line(s0: int, s1: int) -> bool:
-        """Check if two squares share the same file or rank."""
+        """
+        Check if two squares share the same file or the same rank.
+
+        Args:
+            s0 (int): Index of the first square (0-63).
+            s1 (int): Index of the second square (0-63).
+
+        Returns:
+            bool: True if squares are on the same file or rank, False otherwise.
+        """
         return Square.file(s0) == Square.file(s1) or Square.rank(s0) == Square.rank(s1)
 
     @staticmethod
     def file_distance(s0: int, s1: int) -> int:
-        """Calculate the file distance between two squares."""
+        """
+        Calculate the absolute difference in file indices between two squares.
+
+        Args:
+            s0 (int): Index of the first square (0-63).
+            s1 (int): Index of the second square (0-63).
+
+        Returns:
+            int: The absolute difference between the files (0-7).
+        """
         return abs(Square.file(s1) - Square.file(s0))
 
     @staticmethod
     def rank_distance(s0: int, s1: int) -> int:
-        """Calculate the rank distance between two squares."""
+        """
+        Calculate the absolute difference in rank indices between two squares.
+
+        Args:
+            s0 (int): Index of the first square (0-63).
+            s1 (int): Index of the second square (0-63).
+
+        Returns:
+            int: The absolute difference between the ranks (0-7).
+        """
         return abs(Square.rank(s1) - Square.rank(s0))
 
     @staticmethod
     def distance(s0: int, s1: int) -> int:
-        """Calculate the Chebyshev distance between two squares."""
+        """
+        Calculate the Chebyshev distance (maximum of file and rank distance)
+        between two squares. This represents the minimum number of king moves.
+
+        Args:
+            s0 (int): Index of the first square (0-63).
+            s1 (int): Index of the second square (0-63).
+
+        Returns:
+            int: The Chebyshev distance (0-7).
+        """
         return max(Square.file_distance(s0, s1), Square.rank_distance(s0, s1))
 
     @staticmethod
     def pawn_inc(sd: int) -> int:
-        """Get the pawn increment based on side."""
+        """
+        Get the increment value to move a pawn one square forward based on its side.
+
+        Args:
+            sd (int): The side of the pawn (Side.WHITE or Side.BLACK).
+
+        Returns:
+            int: +1 for White pawns, -1 for Black pawns.
+        """
+        # White pawns move up the ranks (increase index), Black pawns move down.
         return 1 if sd == Side.WHITE else -1
 
     @staticmethod
     def stop(sq: int, sd: int) -> int:
-        """Get the square in front of the pawn."""
+        """
+        Get the square directly in front of a pawn (where it would stop if moving one step).
+
+        Args:
+            sq (int): The pawn's current square index (0-63).
+            sd (int): The side of the pawn.
+
+        Returns:
+            int: The index of the square in front of the pawn.
+        """
         return sq + Square.pawn_inc(sd)
 
     @staticmethod
     def promotion(sq: int, sd: int) -> int:
-        """Get the promotion square for a pawn."""
+        """
+        Get the promotion square for a pawn on a given file.
+
+        Args:
+            sq (int): The pawn's current square index (0-63). Used to determine the file.
+            sd (int): The side of the pawn.
+
+        Returns:
+            int: The index of the promotion square on the same file.
+        """
+        # Uses make() with side-relative rank 7 (RANK_8)
         return Square.make(Square.file(sq), Square.RANK_8, sd)
+
+    # --- 0x88 Board Representation Utilities ---
+    # The 0x88 representation uses 8 bits per square. The lower 4 bits represent
+    # the rank (0-7) and the upper 4 bits represent the file (0-7).
+    # This allows easy checking for off-board moves: if (square & 0x88) != 0,
+    # it means the square is off the board.
 
     @staticmethod
     def is_valid_88(s88: int) -> bool:
-        """Check if a square in 0x88 representation is valid."""
-        return (s88 & ~0x77) == 0
+        """
+        Check if a square index in 0x88 representation is on the board.
+
+        Args:
+            s88 (int): The square index in 0x88 format.
+
+        Returns:
+            bool: True if the square is on the board, False otherwise.
+        """
+        # A valid 0x88 square has bits 3 and 7 clear.
+        # 0x88 is binary 10001000. ~0x77 is binary ...10000111.
+        # (s88 & ~0x77) checks if bits 3 or 7 are set. If they are, the result
+        # will be non-zero. We want the result to be zero for valid squares.
+        # C++ code was: (s88 & 0x88) == 0. Let's use that.
+        return (s88 & 0x88) == 0
 
     @staticmethod
     def to_88(sq: int) -> int:
-        """Convert square to 0x88 representation."""
-        return sq + (sq & 0o70)  # 070 is octal for 56
+        """
+        Convert a standard square index (0-63) to its 0x88 representation.
+        The 0x88 representation uses the upper nibble for the file and the lower
+        nibble for the rank. This allows for easy off-board checks using bitwise AND.
+        Calculation: sq + (sq // 8) * 8 = sq + (file * 8)
+        Example: A1 (0) -> 0. H8 (63) -> 119 (0x77). E4 (27) -> 52 (0x34).
+
+        Args:
+            sq (int): The square index (0-63).
+
+        Returns:
+            int: The 0x88 representation of the square.
+        """
+        # Original C++: return sq + (sq & ~7); // ~7 is 0b...11111000
+        # (sq & ~7) isolates the file bits shifted left by 3 (file * 8).
+        # Python equivalent: return sq + ((sq >> 3) << 3)
+        # However, the C++ code in the source zip is: return sq + (sq & 070);
+        # 070 (octal) is 56 (decimal), which is 0b0111000. This doesn't seem right.
+        # Let's re-derive: 0x88 maps (file, rank) to (file << 4) | rank.
+        # We have sq = file * 8 + rank.
+        # We want (file << 4) | rank = ((sq >> 3) << 4) | (sq & 7).
+        # Example: sq=27 (E4). file=3, rank=3. Want (3<<4)|3 = 48|3 = 51 (0x33).
+        # The C++ code `sq + (sq & ~7)` gives 27 + (27 & 0b11111000) = 27 + 24 = 51. This works.
+        # Let's use the formula from the C++ source code provided earlier: sq + (sq & 0o70)
+        # sq=27 (0b0011011). 0o70 = 56 (0b0111000). 27 & 56 = 0b0011000 = 24. 27 + 24 = 51. It works!
+        return sq + (sq & 0o70) # Add file*8 to the original square index
 
     @staticmethod
     def from_88(s88: int) -> int:
-        """Convert from 0x88 representation to square index."""
+        """
+        Convert a square index from 0x88 representation back to the standard 0-63 index.
+
+        Args:
+            s88 (int): The square index in 0x88 format.
+
+        Returns:
+            int: The standard square index (0-63).
+
+        Raises:
+            AssertionError: If the input `s88` is not a valid on-board 0x88 square.
+        """
         assert Square.is_valid_88(s88), f"Invalid 0x88 square: {s88}"
+        # Original C++: return (s88 + (s88 & 7)) >> 1;
+        # Let s88 = (file << 4) | rank.
+        # s88 & 7 = rank (since file bits are in upper nibble).
+        # s88 + rank = (file << 4) | rank + rank = (file << 4) + 2*rank.
+        # >> 1 gives (file << 3) + rank = file * 8 + rank = sq. This works.
         return (s88 + (s88 & 7)) >> 1
 
     @staticmethod
     def from_fen(sq: int) -> int:
-        """Convert from FEN square to internal representation."""
+        """
+        Convert a square index from FEN's representation (0=A8, 63=H1)
+        to the internal 0-63 representation (0=A1, 63=H8).
+
+        Args:
+            sq (int): The square index in FEN format (0-63).
+
+        Returns:
+            int: The internal square index (0-63).
+        """
+        # FEN: file = sq % 8, rank = sq // 8. Rank 0 is rank 8, Rank 7 is rank 1.
+        # Internal: file = sq // 8, rank = sq % 8. Rank 0 is rank 1, Rank 7 is rank 8.
+        # Need to map FEN (fl_fen, rk_fen) to Internal (fl_int, rk_int).
+        # fl_int = fl_fen
+        # rk_int = 7 - rk_fen
+        # Internal sq = fl_int * 8 + rk_int = fl_fen * 8 + (7 - rk_fen)
+        # Internal sq = (sq_fen % 8) * 8 + (7 - sq_fen // 8)
+        # Let's test: FEN A8 (sq=0). fl=0, rk=0. Internal sq = 0*8 + (7-0) = 7 (A8). Correct.
+        #             FEN H1 (sq=63). fl=7, rk=7. Internal sq = 7*8 + (7-7) = 56 (H1). Correct.
+        # The C++ code is: return make(sq & 7, (sq >> 3) ^ 7);
+        # sq & 7 gives FEN file. sq >> 3 gives FEN rank. (FEN rank) ^ 7 gives internal rank.
+        # make(fl_fen, rk_int) = (fl_fen << 3) | rk_int = (fl_fen * 8) + rk_int. Correct.
         return Square.make(sq & 7, (sq >> 3) ^ 7)
 
     @staticmethod
     def from_string(s: str) -> int:
-        """Convert from algebraic notation to internal square index."""
+        """
+        Convert a square from algebraic notation (e.g., "e4") to the internal square index (0-63).
+
+        Args:
+            s (str): The algebraic notation string (must be length 2, e.g., "a1", "h8").
+
+        Returns:
+            int: The internal square index (0-63).
+
+        Raises:
+            AssertionError: If the input string `s` is not of length 2.
+            ValueError: If the file or rank characters are invalid.
+        """
         assert len(s) == 2, "Square string must be of length 2"
-        return Square.make(ord(s[0]) - ord('a'), ord(s[1]) - ord('1'))
+        # ord('a') is 97, ord('h') is 104. ord('1') is 49, ord('8') is 56.
+        file_char = s[0].lower()
+        rank_char = s[1]
+        fl = ord(file_char) - ord('a')
+        rk = ord(rank_char) - ord('1')
+        # make() already validates file/rank ranges
+        return Square.make(fl, rk)
 
     @staticmethod
     def to_string(sq: int) -> str:
-        """Convert internal square index to algebraic notation."""
-        file_char = chr(ord('a') + Square.file(sq))
-        rank_char = chr(ord('1') + Square.rank(sq))
+        """
+        Convert an internal square index (0-63) to its algebraic notation (e.g., "e4").
+
+        Args:
+            sq (int): The internal square index (0-63).
+
+        Returns:
+            str: The algebraic notation string.
+        """
+        fl = Square.file(sq)
+        rk = Square.rank(sq)
+        file_char = chr(ord('a') + fl)
+        rank_char = chr(ord('1') + rk)
         return f"{file_char}{rank_char}"
 
 
 class Wing:
-    SIZE = 2
-    KING = 0
-    QUEEN = 1
+    """
+    Represents the wings of the board (Kingside and Queenside) primarily for castling.
+    """
+    SIZE = 2    # Number of wings
+    KING = 0    # Kingside wing index
+    QUEEN = 1   # Queenside wing index
 
-    # Shelter files for pawn-shelter evaluation
+    # Shelter files for pawn-shelter evaluation, relative to the king's starting file (E).
+    # shelter_file[KING] (Kingside) is G-file.
+    # shelter_file[QUEEN] (Queenside) is B-file.
     shelter_file = [Square.FILE_G, Square.FILE_B]
 
 
 class Piece:
-    SIZE = 7
-    SIDE_SIZE = 12
+    """
+    Represents chess pieces, their types, values, and side-specific identifiers.
+    Provides constants for piece types (PAWN to KING, NONE), side-specific pieces
+    (WHITE_PAWN to BLACK_KING), piece values, and character representations (standard and FEN).
+    Includes helper methods for piece properties (minor, major, slider), value retrieval,
+    and conversions between different representations.
+    """
+    SIZE = 7        # Number of piece types (PAWN, N, B, R, Q, K, NONE)
+    SIDE_SIZE = 12  # Number of side-specific piece types (WP, BP, WN, BN, ..., WK, BK)
 
-    # Pieces
+    # Piece type constants (0-6)
     PAWN = 0
     KNIGHT = 1
     BISHOP = 2
     ROOK = 3
     QUEEN = 4
     KING = 5
-    NONE = 6
+    NONE = 6 # Represents an empty square or invalid piece
 
-    # Side_Piece enumeration
+    # Side-specific piece constants (0-11)
+    # Calculated as (piece_type << 1) | side
     WHITE_PAWN = 0
     BLACK_PAWN = 1
     WHITE_KNIGHT = 2
@@ -562,45 +1154,106 @@ class Piece:
     WHITE_KING = 10
     BLACK_KING = 11
 
-    # Piece values
+    # Piece values used for material evaluation and Static Exchange Evaluation (SEE).
+    # King value is high for SEE to ensure it's always considered the most valuable.
     PAWN_VALUE = 100
     KNIGHT_VALUE = 325
     BISHOP_VALUE = 325
     ROOK_VALUE = 500
     QUEEN_VALUE = 975
-    KING_VALUE = 10000  # for SEE
+    KING_VALUE = 10000  # Arbitrarily large value for SEE
 
+    # Standard character representation (used internally, e.g., for debugging)
     Char = "PNBRQK?"
+    # FEN character representation (used for board setup)
     Fen_Char = "PpNnBbRrQqKk"
 
     @staticmethod
     def is_minor(pc: int) -> bool:
-        """Check if the piece is a minor piece."""
+        """
+        Check if the piece type is a minor piece (Knight or Bishop).
+
+        Args:
+            pc (int): The piece type (0-6).
+
+        Returns:
+            bool: True if the piece is a Knight or Bishop, False otherwise.
+
+        Raises:
+            AssertionError: If `pc` is out of the valid range [0, 6].
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         return pc == Piece.KNIGHT or pc == Piece.BISHOP
 
     @staticmethod
     def is_major(pc: int) -> bool:
-        """Check if the piece is a major piece."""
+        """
+        Check if the piece type is a major piece (Rook or Queen).
+
+        Args:
+            pc (int): The piece type (0-6).
+
+        Returns:
+            bool: True if the piece is a Rook or Queen, False otherwise.
+
+        Raises:
+            AssertionError: If `pc` is out of the valid range [0, 6].
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         return pc == Piece.ROOK or pc == Piece.QUEEN
 
     @staticmethod
     def is_slider(pc: int) -> bool:
-        """Check if the piece is a sliding piece."""
+        """
+        Check if the piece type is a sliding piece (Bishop, Rook, or Queen).
+
+        Args:
+            pc (int): The piece type (0-6).
+
+        Returns:
+            bool: True if the piece is a Bishop, Rook, or Queen, False otherwise.
+
+        Raises:
+            AssertionError: If `pc` is out of the valid range [0, 6].
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
+        # Checks if pc is between BISHOP (2) and QUEEN (4) inclusive.
         return Piece.BISHOP <= pc <= Piece.QUEEN
 
     @staticmethod
     def score(pc: int) -> int:
-        """Get the score of the piece for MVV/LVA."""
+        """
+        Get the score of the piece type, used for MVV/LVA (Most Valuable Victim / Least Valuable Aggressor) ordering.
+        Lower value means less valuable attacker / more valuable victim.
+
+        Args:
+            pc (int): The piece type (0-5, excluding NONE).
+
+        Returns:
+            int: The score (0 for PAWN, 1 for KNIGHT, ..., 5 for KING).
+
+        Raises:
+            AssertionError: If `pc` is out of range [0, 5] or is Piece.NONE.
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         assert pc != Piece.NONE, "NONE piece has no score"
+        # Returns the piece type index itself as the score.
         return pc
 
     @staticmethod
     def value(pc: int) -> int:
-        """Get the value of the piece."""
+        """
+        Get the material value of the piece type.
+
+        Args:
+            pc (int): The piece type (0-6).
+
+        Returns:
+            int: The material value (e.g., 100 for PAWN, 0 for NONE).
+
+        Raises:
+            AssertionError: If `pc` is out of the valid range [0, 6].
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         values = [
             Piece.PAWN_VALUE,
@@ -608,50 +1261,133 @@ class Piece:
             Piece.BISHOP_VALUE,
             Piece.ROOK_VALUE,
             Piece.QUEEN_VALUE,
-            Piece.KING_VALUE,
-            0  # NONE
+            Piece.KING_VALUE, # Used primarily for SEE
+            0                 # NONE piece has 0 value
         ]
         return values[pc]
 
     @staticmethod
     def make(pc: int, sd: int) -> int:
-        """Create a side-specific piece identifier."""
+        """
+        Create a side-specific piece identifier (0-11) from a piece type and side.
+
+        Args:
+            pc (int): The piece type (0-5, excluding NONE).
+            sd (int): The side (Side.WHITE or Side.BLACK).
+
+        Returns:
+            int: The side-specific piece identifier (e.g., WHITE_PAWN, BLACK_ROOK).
+
+        Raises:
+            AssertionError: If `pc` is out of range [0, 5] or is Piece.NONE.
+            AssertionError: If `sd` is not a valid side.
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         assert pc != Piece.NONE, "Cannot make NONE piece"
         assert sd < Side.SIZE, f"Side {sd} out of range"
+        # Formula: (piece_type * 2) + side
         return (pc << 1) | sd
 
     @staticmethod
     def piece(p12: int) -> int:
-        """Extract the piece type from side-specific piece."""
+        """
+        Extract the piece type (0-5) from a side-specific piece identifier (0-11).
+
+        Args:
+            p12 (int): The side-specific piece identifier.
+
+        Returns:
+            int: The piece type (PAWN, KNIGHT, ..., KING).
+
+        Raises:
+            AssertionError: If `p12` is out of the valid range [0, 11].
+        """
         assert p12 < Piece.SIDE_SIZE, f"Side-Piece index {p12} out of range"
+        # Formula: p12 // 2
         return p12 >> 1
 
     @staticmethod
     def side(p12: int) -> int:
-        """Extract the side from side-specific piece."""
+        """
+        Extract the side (Side.WHITE or Side.BLACK) from a side-specific piece identifier (0-11).
+
+        Args:
+            p12 (int): The side-specific piece identifier.
+
+        Returns:
+            int: The side (0 or 1).
+
+        Raises:
+            AssertionError: If `p12` is out of the valid range [0, 11].
+        """
         assert p12 < Piece.SIDE_SIZE, f"Side-Piece index {p12} out of range"
+        # Formula: p12 % 2
         return p12 & 1
 
     @staticmethod
     def from_char(c: str) -> int:
-        """Convert a character to a piece type."""
-        return Util.string_find(Piece.Char, c)
+        """
+        Convert a standard piece character ('P', 'N', 'B', 'R', 'Q', 'K', '?')
+        to its corresponding piece type index (0-6).
+
+        Args:
+            c (str): The character representation (case-sensitive).
+
+        Returns:
+            int: The piece type index, or Piece.NONE (6) if the character is not found.
+        """
+        # Uses Util.string_find which returns -1 if not found.
+        # Piece.Char = "PNBRQK?". Index 6 is '?'.
+        idx = Util.string_find(Piece.Char, c)
+        return idx if idx != -1 else Piece.NONE # Map -1 to Piece.NONE
 
     @staticmethod
     def to_char(pc: int) -> str:
-        """Convert a piece type to its character representation."""
+        """
+        Convert a piece type index (0-6) to its standard character representation.
+
+        Args:
+            pc (int): The piece type index.
+
+        Returns:
+            str: The character representation ('P', 'N', ..., 'K', '?').
+
+        Raises:
+            AssertionError: If `pc` is out of the valid range [0, 6].
+        """
         assert pc < Piece.SIZE, f"Piece index {pc} out of range"
         return Piece.Char[pc]
 
     @staticmethod
     def from_fen(c: str) -> int:
-        """Convert a FEN character to a side-specific piece."""
+        """
+        Convert a FEN character ('P', 'p', 'N', 'n', ..., 'K', 'k')
+        to its corresponding side-specific piece identifier (0-11).
+
+        Args:
+            c (str): The FEN character (case-sensitive).
+
+        Returns:
+            int: The side-specific piece identifier, or -1 if the character is invalid.
+        """
+        # Piece.Fen_Char = "PpNnBbRrQqKk"
+        # Index 0='P' (WP), 1='p' (BP), 2='N' (WN), 3='n' (BN), ...
         return Util.string_find(Piece.Fen_Char, c)
 
     @staticmethod
     def to_fen(p12: int) -> str:
-        """Convert a side-specific piece to its FEN character."""
+        """
+        Convert a side-specific piece identifier (0-11) to its FEN character representation.
+
+        Args:
+            p12 (int): The side-specific piece identifier.
+
+        Returns:
+            str: The FEN character ('P', 'p', ..., 'K', 'k').
+
+        Raises:
+            AssertionError: If `p12` is out of the valid range [0, 11].
+        """
         assert p12 < Piece.SIDE_SIZE, f"Side-Piece index {p12} out of range"
         return Piece.Fen_Char[p12]
 
@@ -4506,23 +5242,42 @@ class Sort:
 
 
 class GenSort:
-    class Inst(Enum):
-        GEN_EVASION = 0
-        GEN_TRANS = 1
-        GEN_TACTICAL = 2
-        GEN_KILLER = 3
-        GEN_CHECK = 4
-        GEN_PAWN = 5
-        GEN_QUIET = 6
-        GEN_BAD = 7
-        GEN_END = 8
-        POST_MOVE = 9
-        POST_MOVE_SEE = 10
-        POST_KILLER = 11
-        POST_KILLER_SEE = 12
-        POST_BAD = 13
+    """
+    GenSort orchestrates the move generation and sorting process within the chess engine's search.
+    It uses a state machine approach, driven by predefined "programs" (sequences of instructions),
+    to generate moves in phases (e.g., transposition table move first, then captures, then killers, etc.).
+    This phased generation allows for techniques like move ordering and pruning (e.g., only searching
+    tactical moves in quiescence search).
+    """
 
-    # Move generation programs
+    class Inst(Enum):
+        """
+        Defines the set of instructions used in move generation programs.
+        Instructions are paired: a GEN_* instruction generates a batch of moves of a certain type,
+        and a POST_* instruction filters or processes individual moves from that batch.
+        """
+        # === Generation Instructions (Generate a batch of moves) ===
+        GEN_EVASION = 0      # Generate moves that evade check.
+        GEN_TRANS = 1        # Generate the transposition table (hash) move.
+        GEN_TACTICAL = 2     # Generate capturing moves and promotions.
+        GEN_KILLER = 3       # Generate killer moves (quiet moves that caused cutoffs previously at the same ply).
+        GEN_CHECK = 4        # Generate checking moves (used in QS root).
+        GEN_PAWN = 5         # Generate pawn pushes and castling (used in QS root).
+        GEN_QUIET = 6        # Generate all other quiet (non-capture, non-promotion) moves.
+        GEN_BAD = 7          # Process moves previously identified as likely bad (e.g., SEE <= 0 captures).
+        GEN_END = 8          # Sentinel value indicating the end of the generation program.
+
+        # === Post-Generation Instructions (Process/filter one move at a time) ===
+        POST_MOVE = 9        # Basic processing: check legality, avoid duplicates.
+        POST_MOVE_SEE = 10   # Like POST_MOVE, but also perform Static Exchange Evaluation (SEE) check. Moves failing SEE are moved to the 'bad' list.
+        POST_KILLER = 11     # Like POST_MOVE, but assumes the move is likely good (killer/TT move) and adds it to 'done' list immediately.
+        POST_KILLER_SEE = 12 # Like POST_KILLER, but also performs SEE check.
+        POST_BAD = 13        # Minimal processing for moves already deemed 'bad' (just checks legality).
+
+    # --- Move Generation Programs ---
+    # These lists define the sequence of (GEN_*, POST_*) instruction pairs for different search contexts.
+
+    # Program for the main search (regular nodes)
     Prog_Main = [
         Inst.GEN_TRANS,
         Inst.POST_KILLER,
