@@ -847,19 +847,25 @@ class Square:
         Returns:
             bool: True if both squares have the same colour, False otherwise.
         """
-        # Two squares have the same color iff the parity of (file0 + rank0)
-        # is the same as the parity of (file1 + rank1).
-        # This is equivalent to checking if the parity of
-        # ((file0 + rank0) + (file1 + rank1)) is even.
-        # Parity(a+b) = Parity(a) ^ Parity(b).
-        # Parity(file+rank) = Parity(file) ^ Parity(rank).
-        # So, check Parity(file0^rank0) == Parity(file1^rank1)
-        # which is Parity((file0^rank0)^(file1^rank1)) == 0
-        # which is Parity((file0^file1)^(rank0^rank1)) == 0
-        # Let diff = s0 ^ s1. file_diff = diff >> 3, rank_diff = diff & 7.
-        # Check Parity(file_diff ^ rank_diff) == 0.
+        # The color of a square (file, rank) depends on the parity of (file + rank).
+        # If (file + rank) is even, it's one color; if odd, it's the other.
+        # Two squares (f0, r0) and (f1, r1) have the same color if and only if
+        # (f0 + r0) and (f1 + r1) have the same parity.
+
+        # This is equivalent to checking if:
+        #   Parity(f0 + r0) == Parity(f1 + r1)
+        # Using the property Parity(a + b) = Parity(a) ^ Parity(b) (where ^ is XOR):
+        #   Parity(f0) ^ Parity(r0) == Parity(f1) ^ Parity(r1)
+
+        # Calculate the bitwise difference between the square indices.
         diff = s0 ^ s1
-        # Check if the parity of (file difference XOR rank difference) is 0.
+
+        # Extract parts related to rank difference (diff & 7) and file difference (diff >> 3).
+        # XOR these parts together.
+        # Check the parity (the least significant bit, & 1) of the result.
+        # If the parity is 0 (even), the squares (f0, r0) and (f1, r1) satisfy
+        # Parity(f0) ^ Parity(r0) == Parity(f1) ^ Parity(r1), meaning they have the same color.
+        # For a detailed proof of equivalence, see explanations of bitboard techniques.
         return (((diff >> 3) ^ (diff & 7)) & 1) == 0
 
     @staticmethod
@@ -983,7 +989,6 @@ class Square:
         # 0x88 is binary 10001000. ~0x77 is binary ...10000111.
         # (s88 & ~0x77) checks if bits 3 or 7 are set. If they are, the result
         # will be non-zero. We want the result to be zero for valid squares.
-        # C++ code was: (s88 & 0x88) == 0. Let's use that.
         return (s88 & 0x88) == 0
 
     @staticmethod
@@ -1001,19 +1006,7 @@ class Square:
         Returns:
             int: The 0x88 representation of the square.
         """
-        # Original C++: return sq + (sq & ~7); // ~7 is 0b...11111000
-        # (sq & ~7) isolates the file bits shifted left by 3 (file * 8).
-        # Python equivalent: return sq + ((sq >> 3) << 3)
-        # However, the C++ code in the source zip is: return sq + (sq & 070);
-        # 070 (octal) is 56 (decimal), which is 0b0111000. This doesn't seem right.
-        # Let's re-derive: 0x88 maps (file, rank) to (file << 4) | rank.
-        # We have sq = file * 8 + rank.
-        # We want (file << 4) | rank = ((sq >> 3) << 4) | (sq & 7).
-        # Example: sq=27 (E4). file=3, rank=3. Want (3<<4)|3 = 48|3 = 51 (0x33).
-        # The C++ code `sq + (sq & ~7)` gives 27 + (27 & 0b11111000) = 27 + 24 = 51. This works.
-        # Let's use the formula from the C++ source code provided earlier: sq + (sq & 0o70)
-        # sq=27 (0b0011011). 0o70 = 56 (0b0111000). 27 & 56 = 0b0011000 = 24. 27 + 24 = 51. It works!
-        return sq + (sq & 0o70) # Add file*8 to the original square index
+        return sq + (sq & 0o70)
 
     @staticmethod
     def from_88(s88: int) -> int:
@@ -1030,11 +1023,6 @@ class Square:
             AssertionError: If the input `s88` is not a valid on-board 0x88 square.
         """
         assert Square.is_valid_88(s88), f"Invalid 0x88 square: {s88}"
-        # Original C++: return (s88 + (s88 & 7)) >> 1;
-        # Let s88 = (file << 4) | rank.
-        # s88 & 7 = rank (since file bits are in upper nibble).
-        # s88 + rank = (file << 4) | rank + rank = (file << 4) + 2*rank.
-        # >> 1 gives (file << 3) + rank = file * 8 + rank = sq. This works.
         return (s88 + (s88 & 7)) >> 1
 
     @staticmethod
@@ -1049,18 +1037,6 @@ class Square:
         Returns:
             int: The internal square index (0-63).
         """
-        # FEN: file = sq % 8, rank = sq // 8. Rank 0 is rank 8, Rank 7 is rank 1.
-        # Internal: file = sq // 8, rank = sq % 8. Rank 0 is rank 1, Rank 7 is rank 8.
-        # Need to map FEN (fl_fen, rk_fen) to Internal (fl_int, rk_int).
-        # fl_int = fl_fen
-        # rk_int = 7 - rk_fen
-        # Internal sq = fl_int * 8 + rk_int = fl_fen * 8 + (7 - rk_fen)
-        # Internal sq = (sq_fen % 8) * 8 + (7 - sq_fen // 8)
-        # Let's test: FEN A8 (sq=0). fl=0, rk=0. Internal sq = 0*8 + (7-0) = 7 (A8). Correct.
-        #             FEN H1 (sq=63). fl=7, rk=7. Internal sq = 7*8 + (7-7) = 56 (H1). Correct.
-        # The C++ code is: return make(sq & 7, (sq >> 3) ^ 7);
-        # sq & 7 gives FEN file. sq >> 3 gives FEN rank. (FEN rank) ^ 7 gives internal rank.
-        # make(fl_fen, rk_int) = (fl_fen << 3) | rk_int = (fl_fen * 8) + rk_int. Correct.
         return Square.make(sq & 7, (sq >> 3) ^ 7)
 
     @staticmethod
@@ -1393,161 +1369,309 @@ class Piece:
 
 
 class Move:
-    # Constants
+    """
+    Represents and encodes chess moves.
+
+    Moves are encoded into integers for efficiency. This class provides constants
+    for special moves (NONE, NULL_), bit manipulation constants for encoding/decoding,
+    and static methods to create, decode, and analyze moves.
+
+    Move Encoding (32 bits, though only lower 21 are used in `make`):
+    - Bits 30-18: Moving Piece Type (3 bits) - Not used in the primary `make` encoding, but potentially elsewhere.
+    - Bits 17-15: Captured Piece Type (3 bits)
+    - Bits 14-12: Promotion Piece Type (3 bits)
+    - Bits 11-6:  From Square (6 bits, 0-63)
+    - Bits 5-0:   To Square (6 bits, 0-63)
+
+    The lower 21 bits (FLAGS_BITS + 12) define the core move information.
+    The upper bits are used for storing scores in move lists (Gen.List).
+    """
+    # --- Constants for Move Encoding/Decoding ---
+
+    # Number of bits used for flags (moving piece, captured piece, promotion piece)
     FLAGS_BITS = 9
+    # Total number of possible flag combinations (2^9 = 512)
     FLAGS_SIZE = 1 << FLAGS_BITS
-    FLAGS_MASK = FLAGS_SIZE - 1
+    # Mask to extract the flags (lower 9 bits of the flag section)
+    FLAGS_MASK = FLAGS_SIZE - 1 # 0b111111111 (511)
 
+    # Total number of bits used for the core move representation (flags + from_sq + to_sq)
+    # 9 (flags) + 6 (from) + 6 (to) = 21 bits
     BITS = FLAGS_BITS + 12
+    # Total number of possible core move representations (2^21)
     SIZE = 1 << BITS
-    MASK = SIZE - 1
+    # Mask to extract the core move representation (lower 21 bits)
+    MASK = SIZE - 1 # 0x1FFFFF
 
-    SCORE_BITS = 32 - BITS
+    # Number of bits available for storing scores in move lists (assuming 32-bit integers)
+    SCORE_BITS = 32 - BITS # 32 - 21 = 11 bits
+    # Maximum possible score value + 1 (2^11 = 2048)
     SCORE_SIZE = 1 << SCORE_BITS
-    SCORE_MASK = SCORE_SIZE - 1
+    # Mask to extract the score (upper 11 bits)
+    SCORE_MASK = SCORE_SIZE - 1 # 0x7FF
 
-    # Move Enums
-    NONE = 0
-    NULL_ = 1
-    
+    # --- Special Move Values ---
+    NONE = 0   # Represents an invalid or null move (often used as a sentinel)
+    NULL_ = 1  # Represents a null move (passing the turn)
+
+    # --- Static Exchange Evaluation (SEE) ---
     class SEE:
+        """
+        Calculates the Static Exchange Evaluation (SEE) for a move.
+        SEE determines the likely material outcome of a sequence of captures
+        on a specific square, assuming best play from both sides (capturing
+        with the least valuable attacker first). It helps identify moves that
+        win material ("good captures") versus moves that lose material ("bad captures").
+        """
         def __init__(self):
-            self.p_board: Optional['Board'] = None
-            self.p_to: int = 0
-            self.p_all: int = 0
+            """Initializes the SEE calculator state."""
+            self.p_board: Optional['Board.BOARD'] = None # Reference to the board state
+            self.p_to: int = Square.NONE # Target square of the capture sequence
+            self.p_all: int = 0          # Bitboard of all pieces involved (updated during calculation)
 
-            self.p_val: int = 0
-            self.p_side: int = 0
+            self.p_val: int = 0          # Value of the piece currently on the target square
+            self.p_side: int = Side.WHITE # Side whose turn it is to capture
 
         def init(self, t: int, sd: int):
             """
-            Initialize the SEE evaluation.
+            Initializes the SEE calculation for a capture on square `t` initiated by side `sd`.
+
+            Args:
+                t (int): The target square index (0-63).
+                sd (int): The side making the initial capture.
             """
             self.p_to = t
+            # Start with all pieces currently on the board
             self.p_all = self.p_board.all_pieces()
 
-            pc = self.p_board.square(t)
+            pc = self.p_board.square(t) # Piece being captured initially
 
+            # Initial value is the value of the piece being captured
             self.p_val = Piece.value(pc)
+            # The side to move next is the side making the initial capture
             self.p_side = sd
 
         def move(self, f: int) -> int:
             """
-            Execute a move in the SEE evaluation.
+            Simulates making a capture from square `f` in the SEE sequence.
+            Updates the state (removes attacker, updates piece value on target square, flips side).
+
+            Args:
+                f (int): The square index (0-63) of the capturing piece.
+
+            Returns:
+                int: The material value gained by this capture (value of the piece previously on the target square).
             """
-            assert Bit.is_set(self.p_all, f), "Bit not set in p_all."
+            assert Bit.is_set(self.p_all, f), "Attacker bit not set in p_all."
+            # Remove the capturing piece from the set of available pieces
             self.p_all = Bit.clear_bit(self.p_all, f)
 
-            pc = self.p_board.square(f)
-            assert pc != Piece.NONE and self.p_board.square_side(f) == self.p_side, "Invalid piece or side."
+            pc = self.p_board.square(f) # Piece type making the capture
+            assert pc != Piece.NONE and self.p_board.square_side(f) == self.p_side, "Invalid piece or side for SEE capture."
 
+            # Store the value of the piece currently on the target square (the gain)
             val = self.p_val
+            # Update the value on the target square to the value of the capturing piece
             self.p_val = Piece.value(pc)
 
+            # Handle promotion during capture (rare, but possible)
             if pc == Piece.PAWN and Square.is_promotion(self.p_to):
+                # Assume promotion to Queen for SEE calculation
                 delta = Piece.QUEEN_VALUE - Piece.PAWN_VALUE
-                val += delta
-                self.p_val += delta
+                val += delta     # Gain increases by promotion value difference
+                self.p_val += delta # Value of piece on square increases
 
+            # If the captured piece was a King (shouldn't happen in SEE, but for safety)
             if val == Piece.KING_VALUE:
-                self.p_all = 0  # Erase all attackers
+                self.p_all = 0  # Erase all remaining attackers (game over)
 
+            # Flip the side to move
             self.p_side = Side.opposit(self.p_side)
 
-            return val
+            return val # Return the value gained by this capture
 
         def see_rec(self, alpha: int, beta: int) -> int:
             """
-            Recursive SEE evaluation.
-            """
-            assert alpha < beta, "Alpha must be less than beta."
+            Recursive part of the SEE calculation using Negamax-like approach.
+            Determines the best possible outcome for the current side to move.
 
+            Args:
+                alpha (int): Lower bound for the score.
+                beta (int): Upper bound for the score.
+
+            Returns:
+                int: The SEE score from the current position. A positive score means
+                     the side whose turn it was *initially* gains material.
+            """
+            assert alpha < beta, "Alpha must be less than beta in SEE."
+
+            # Initial score assumes no further captures occur.
+            # For the side whose turn it is, the outcome is 0 (no gain/loss).
             s0 = 0
 
+            # --- Alpha-Beta Pruning ---
+            # If the current side can guarantee at least s0, update alpha.
             if s0 > alpha:
                 alpha = s0
+                # If s0 is already >= beta, the opponent won't allow this sequence.
                 if s0 >= beta:
                     return s0
 
+            # If the value of the piece currently on the target square (p_val)
+            # is less than or equal to alpha, it means capturing it is potentially
+            # worse than the current best alternative (alpha). Prune this branch.
+            # Note: This pruning seems slightly off compared to standard SEE.
+            # Usually, you compare the potential loss (-p_val) with alpha.
+            # If -p_val <= alpha, then gain = p_val >= -alpha.
+            # Let's stick to the original logic for now.
             if self.p_val <= alpha:
-                return self.p_val
+                return self.p_val # Return the value of the piece (potential loss)
 
+            # Find the least valuable attacker (LVA) for the current side.
             f = self.pick_lva()
 
+            # If no attackers are found, return the score assuming no capture (s0).
             if f == Square.NONE:
                 return s0
 
-            cap = self.move(f)
+            # Simulate the capture by the LVA.
+            cap = self.move(f) # `cap` is the value gained by this capture.
+
+            # Recursively call SEE for the opponent.
+            # The score for the current side is `cap` (gain from this capture)
+            # minus the score the opponent gets from the resulting position.
+            # The bounds are flipped and relative to the gain `cap`.
+            # Opponent's alpha = cap - beta (max loss current side tolerates)
+            # Opponent's beta = cap - alpha (min gain current side requires)
             s1 = cap - self.see_rec(cap - beta, cap - alpha)
 
+            # Return the best outcome for the current side (either don't capture (s0) or capture (s1)).
             return max(s0, s1)
 
         def pick_lva(self) -> int:
             """
-            Pick the least valuable attacker.
-            """
-            sd = self.p_side
+            Find the least valuable attacker (LVA) for the current side (`self.p_side`)
+            that can attack the target square (`self.p_to`).
+            Considers only pieces currently in `self.p_all`.
+            Checks for blockers along the attack ray for sliding pieces.
 
+            Returns:
+                int: The square index (0-63) of the LVA, or Square.NONE if no attacker is found.
+            """
+            sd = self.p_side # Side whose turn it is to attack
+
+            # Iterate through piece types from least valuable (Pawn) to most valuable (King)
             for pc in range(Piece.PAWN, Piece.KING + 1):
+                # Find pieces of type `pc` and side `sd` that pseudo-attack `p_to`
+                # and are still present in the `p_all` bitboard.
                 fs = self.p_board.piece(pc, sd) & Attack.pseudo_attacks_to(pc, sd, self.p_to) & self.p_all
 
+                # Iterate through the potential attackers found
                 while fs:
-                    b = fs & -fs
-                    f = Bit.first(b)
+                    b = fs & -fs # Isolate the least significant bit (one attacker)
+                    f = Bit.first(b) # Get the square index of this attacker
 
+                    # For sliders, check if the path between attacker `f` and target `p_to` is clear
+                    # (using the current `p_all` bitboard, excluding `f` itself implicitly).
+                    # Non-sliders don't need this check as Attack.Between is 0.
                     if (self.p_all & Attack.Between[f][self.p_to]) == 0:
-                        return f
+                        return f # Found the LVA for this piece type
 
+                    # Remove this attacker and continue checking others of the same type
                     fs &= fs - 1
 
+            # No attackers found for any piece type
             return Square.NONE
 
         def see(self, mv: int, alpha: int, beta: int, bd: 'Board.BOARD') -> int:
             """
-            Perform SEE evaluation on a move.
+            Calculate the Static Exchange Evaluation (SEE) for a given move `mv`.
+
+            Args:
+                mv (int): The encoded move (must involve a capture or be a promotion).
+                alpha (int): Lower bound for the SEE score.
+                beta (int): Upper bound for the SEE score.
+                bd (Board.BOARD): The current board state.
+
+            Returns:
+                int: The SEE score. Positive means the move gains material, negative means it loses.
             """
-            assert alpha < beta, "Alpha must be less than beta."
+            assert alpha < beta, "Alpha must be less than beta in SEE."
 
-            self.p_board = bd
+            self.p_board = bd # Set the board context
 
-            f = Move.from_sq(mv)
-            t = Move.to_sq(mv)
+            f = Move.from_sq(mv) # From square
+            t = Move.to_sq(mv)   # To square (the target of the exchange)
 
-            pc = self.p_board.square(f)
-            sd = self.p_board.square_side(f)
+            pc = self.p_board.square(f) # Piece making the initial move
+            sd = self.p_board.square_side(f) # Side making the initial move
 
+            # Initialize the SEE calculation for the target square `t`, with side `sd` moving first.
             self.init(t, sd)
-            cap = self.move(f)  # Assumes queen promotion
+            # Simulate the initial capture/move. `cap` is the value gained.
+            # Assumes Queen promotion if it's a pawn move to the back rank.
+            cap = self.move(f)
 
+            # Adjust gain `cap` and current value `p_val` if it was an underpromotion.
             if pc == Piece.PAWN and Square.is_promotion(t):
-                delta = Piece.QUEEN_VALUE - Piece.value(Move.prom(mv))
-                cap -= delta
-                self.p_val -= delta
+                promoted_piece = Move.prom(mv)
+                # If no promotion piece specified, make() defaults to Queen, which move() handled.
+                # If an underpromotion was specified, adjust the values.
+                if promoted_piece != Piece.QUEEN:
+                     # Calculate difference between assumed Queen value and actual promotion value
+                    delta = Piece.QUEEN_VALUE - Piece.value(promoted_piece)
+                    cap -= delta     # Reduce the gain
+                    self.p_val -= delta # Reduce the value of the piece on the square
 
+            # The final SEE score is the gain from the first capture (`cap`)
+            # minus the best outcome the opponent can achieve recursively.
             return cap - self.see_rec(cap - beta, cap - alpha)
+
+    # --- Move Encoding/Decoding Static Methods ---
 
     @staticmethod
     def make_flags(pc: int, cp: int, pp: int = Piece.NONE) -> int:
         """
-        Create move flags by encoding piece, captured piece, and promotion piece.
-        Flags occupy 9 bits: pc (3 bits), cp (3 bits), pp (3 bits).
+        Create the 9-bit flags field for a move.
+        Used internally by `make`.
+
+        Args:
+            pc (int): Moving piece type (0-6).
+            cp (int): Captured piece type (0-6).
+            pp (int, optional): Promotion piece type (0-6). Defaults to Piece.NONE.
+
+        Returns:
+            int: The 9-bit flags value.
+
+        Raises:
+            AssertionError: If any piece type is out of range [0, 6].
         """
         assert 0 <= pc < Piece.SIZE, "Piece type out of range."
         assert 0 <= cp < Piece.SIZE, "Captured piece type out of range."
         assert 0 <= pp < Piece.SIZE, "Promotion piece type out of range."
 
+        # Layout: [pc: 3 bits] [cp: 3 bits] [pp: 3 bits]
         return (pc << 6) | (cp << 3) | pp
 
     @staticmethod
     def make(f: int, t: int, pc: int, cp: int, pp: int = Piece.NONE) -> int:
         """
-        Encode a move into an integer.
-        Bit layout:
-        [30-18] Piece (3 bits)
-        [17-15] Captured Piece (3 bits)
-        [14-12] Promotion Piece (3 bits)
-        [11-6] From Square (6 bits)
-        [5-0] To Square (6 bits)
+        Encode a move into a single integer using the lower 21 bits.
+
+        Args:
+            f (int): From square index (0-63).
+            t (int): To square index (0-63).
+            pc (int): Moving piece type (0-5, excluding NONE).
+            cp (int): Captured piece type (0-6).
+            pp (int, optional): Promotion piece type (0-5, excluding NONE). Defaults to Piece.NONE.
+
+        Returns:
+            int: The encoded move integer.
+
+        Raises:
+            AssertionError: If squares or piece types are out of range.
+            AssertionError: If the moving piece is NONE.
+            AssertionError: If a non-pawn piece is specified for promotion.
         """
         assert 0 <= f < Square.SIZE, "From square out of range."
         assert 0 <= t < Square.SIZE, "To square out of range."
@@ -1555,214 +1679,427 @@ class Move:
         assert 0 <= cp < Piece.SIZE, "Captured piece type out of range."
         assert 0 <= pp < Piece.SIZE, "Promotion piece type out of range."
         assert pc != Piece.NONE, "Piece type cannot be NONE in a move."
+        # Promotion piece must be NONE unless the moving piece is a PAWN
         assert pp == Piece.NONE or pc == Piece.PAWN, "Only pawns can promote."
 
+        # Bit layout: [pc: 3 bits] [cp: 3 bits] [pp: 3 bits] [f: 6 bits] [t: 6 bits]
+        # Total 21 bits.
         return (pc << 18) | (cp << 15) | (pp << 12) | (f << 6) | t
 
     @staticmethod
     def from_sq(mv: int) -> int:
         """
-        Extract the 'from' square from a move.
+        Extract the 'from' square index (0-63) from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The 'from' square index.
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract from_sq from NONE."
         assert mv != Move.NULL_, "Cannot extract from_sq from NULL_."
-        return (mv >> 6) & 0o77  # 077 octal == 63 decimal
+        # Extract bits 11-6
+        return (mv >> 6) & 0o77  # 0o77 is octal for 63 (0b111111)
 
     @staticmethod
     def to_sq(mv: int) -> int:
         """
-        Extract the 'to' square from a move.
+        Extract the 'to' square index (0-63) from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The 'to' square index.
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract to_sq from NONE."
         assert mv != Move.NULL_, "Cannot extract to_sq from NULL_."
-        return mv & 0o77  # 077 octal == 63 decimal
+        # Extract bits 5-0
+        return mv & 0o77  # 0o77 is octal for 63 (0b111111)
 
     @staticmethod
     def piece(mv: int) -> int:
         """
-        Extract the piece type from a move.
+        Extract the moving piece type (0-5) from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The moving piece type.
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract piece from NONE."
         assert mv != Move.NULL_, "Cannot extract piece from NULL_."
-        return (mv >> 18) & 0b111  # Extract 3 bits
+        # Extract bits 20-18
+        return (mv >> 18) & 0b111
 
     @staticmethod
     def cap(mv: int) -> int:
         """
-        Extract the captured piece type from a move.
+        Extract the captured piece type (0-6) from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The captured piece type (Piece.NONE if no capture).
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract captured_piece from NONE."
         assert mv != Move.NULL_, "Cannot extract captured_piece from NULL_."
-        return (mv >> 15) & 0b111  # Extract 3 bits
+        # Extract bits 17-15
+        return (mv >> 15) & 0b111
 
     @staticmethod
     def prom(mv: int) -> int:
         """
-        Extract the promotion piece type from a move.
+        Extract the promotion piece type (0-6) from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The promotion piece type (Piece.NONE if no promotion).
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract promotion_piece from NONE."
         assert mv != Move.NULL_, "Cannot extract promotion_piece from NULL_."
-        return (mv >> 12) & 0b111  # Extract 3 bits
+        # Extract bits 14-12
+        return (mv >> 12) & 0b111
 
     @staticmethod
     def flags(mv: int) -> int:
         """
-        Extract the flags from a move.
+        Extract the 9-bit flags field (piece, captured_piece, promotion_piece)
+        from an encoded move.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            int: The 9-bit flags value.
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot extract flags from NONE."
         assert mv != Move.NULL_, "Cannot extract flags from NULL_."
-        return (mv >> 12) & 0o777  # 0777 octal == 511 decimal
+        # Extract bits 20-12
+        return (mv >> 12) & 0o777  # 0o777 is octal for 511 (0b111111111)
 
     @staticmethod
     def to_can(mv: int) -> str:
         """
-        Convert a move to coordinate (CAN) notation.
-        Example: e2e4, e7e8q
+        Convert an encoded move to Coordinate Algebraic Notation (CAN).
+        Examples: "e2e4", "e7e8q", "g1f3".
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            str: The move in CAN format.
+
+        Raises:
+            AssertionError: If `mv` is Move.NONE or Move.NULL_.
         """
         assert mv != Move.NONE, "Cannot convert NONE move to CAN."
         assert mv != Move.NULL_, "Cannot convert NULL_ move to CAN."
 
         from_sq = Move.from_sq(mv)
         to_sq = Move.to_sq(mv)
-        prom = Move.prom(mv)
+        prom = Move.prom(mv) # Get promotion piece type
 
+        # Convert squares to algebraic notation
         move_str = Square.to_string(from_sq) + Square.to_string(to_sq)
 
+        # Append promotion piece character (lowercase) if promotion occurred
         if prom != Piece.NONE:
             move_str += Piece.to_char(prom).lower()
 
         return move_str
 
+    # --- Move Property Checkers ---
+
     @staticmethod
     def is_capture(mv: int) -> bool:
         """
-        Check if the move is a capture.
+        Check if the move involves capturing a piece.
+        This includes standard captures and en passant.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the captured piece type is not NONE, False otherwise.
         """
+        # Checks the captured piece field (bits 17-15)
         return Move.cap(mv) != Piece.NONE
 
     @staticmethod
     def is_en_passant(mv: int, bd: 'Board.BOARD') -> bool:
         """
         Check if the move is an en passant capture.
+        An en passant capture is a pawn move where the 'to' square matches
+        the board's current en passant target square.
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if it's a pawn move to the en passant square, False otherwise.
         """
+        # Must be a pawn move and the destination must be the board's ep square.
         return Move.piece(mv) == Piece.PAWN and Move.to_sq(mv) == bd.ep_sq()
 
     @staticmethod
     def is_recapture(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Check if the move is a recapture.
+        Check if the move is a recapture on the square where the last capture occurred.
+        It also checks if the recapture is considered "winning" using SEE.
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state (before the move `mv`).
+
+        Returns:
+            bool: True if the move captures on the last capture square and is SEE-winning, False otherwise.
         """
+        # Check if the 'to' square matches the board's last recapture square
+        # and if the move is considered a winning tactical move by SEE.
         return Move.to_sq(mv) == bd.recap() and Move.is_win(mv, bd)
 
     @staticmethod
     def is_promotion(mv: int) -> bool:
         """
-        Check if the move is a promotion.
+        Check if the move involves a pawn promotion.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the promotion piece type is not NONE, False otherwise.
         """
+        # Checks the promotion piece field (bits 14-12)
         return Move.prom(mv) != Piece.NONE
 
     @staticmethod
     def is_queen_promotion(mv: int) -> bool:
         """
-        Check if the move is a queen promotion.
+        Check if the move is specifically a promotion to a Queen.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the promotion piece type is QUEEN, False otherwise.
         """
         return Move.prom(mv) == Piece.QUEEN
 
     @staticmethod
     def is_under_promotion(mv: int) -> bool:
         """
-        Check if the move is an under-promotion.
+        Check if the move is an under-promotion (promotion to N, B, or R).
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the move is a promotion but not to a Queen, False otherwise.
         """
         pp = Move.prom(mv)
+        # Check if it's a promotion (pp != NONE) and the piece is not a Queen.
         return pp != Piece.NONE and pp != Piece.QUEEN
 
     @staticmethod
     def is_tactical(mv: int) -> bool:
         """
-        Check if the move is tactical (capture or promotion).
+        Check if the move is considered tactical.
+        Tactical moves are captures or promotions.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the move is a capture or a promotion, False otherwise.
         """
         return Move.is_capture(mv) or Move.is_promotion(mv)
 
     @staticmethod
     def is_pawn_push(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Check if the move is a pawn push.
+        Check if the move is a potentially significant pawn push (passed pawn on 6th/7th rank).
+        Used for move extensions in search.
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if it's a non-capturing passed pawn push to the 6th or 7th rank (relative), False otherwise.
         """
+        # Tactical moves (captures/promotions) are not considered simple pawn pushes here.
         if Move.is_tactical(mv):
             return False
 
         f = Move.from_sq(mv)
         t = Move.to_sq(mv)
 
-        pc = bd.square(f)
-        sd = bd.square_side(f)
+        pc = bd.square(f) # Moving piece
+        sd = bd.square_side(f) # Side of moving piece
 
+        # Check if it's a pawn moving to the 6th rank or beyond (relative to its side),
+        # if the pawn is passed on the destination square, and it's not a capture.
         return (pc == Piece.PAWN and
-                Square.rank(t, sd) >= Square.RANK_6 and
-                Pawn.is_passed(t, sd, bd) and
-                not Move.is_capture(mv))
+                Square.rank(t, sd) >= Square.RANK_6 and # Rank 6 or 7 relative
+                Pawn.is_passed(t, sd, bd) and # Is the pawn passed on the 'to' square?
+                not Move.is_capture(mv)) # Ensure it's not a capture
 
     @staticmethod
     def is_castling(mv: int) -> bool:
         """
-        Check if the move is castling.
+        Check if the move is a castling move.
+        Castling is identified by the King moving two squares horizontally.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if it's a King move with a horizontal distance of 2 squares, False otherwise.
         """
+        # Check if the moving piece is a King and the distance between from/to squares matches castling delta.
+        # Note: Square.CASTLING_DELTA is 16 (abs(E1-C1) or abs(E1-G1)).
         return Move.piece(mv) == Piece.KING and \
                abs(Move.to_sq(mv) - Move.from_sq(mv)) == Square.CASTLING_DELTA
 
     @staticmethod
     def is_conversion(mv: int) -> bool:
         """
-        Check if the move involves a conversion (capture, pawn move, or castling).
+        Check if the move is a "conversion" move.
+        Conversion moves reset the fifty-move rule counter.
+        These include captures, pawn moves (pushes or captures), and castling.
+
+        Args:
+            mv (int): The encoded move integer.
+
+        Returns:
+            bool: True if the move is a capture, pawn move, or castling, False otherwise.
         """
         return Move.is_capture(mv) or Move.piece(mv) == Piece.PAWN or Move.is_castling(mv)
+
+    # --- Move Creation and Analysis with Board Context ---
 
     @staticmethod
     def make_move(f: int, t: int, pp: int, bd: 'Board.BOARD') -> int:
         """
-        Create a move with additional board context.
+        Create an encoded move integer based on from/to squares and board context.
+        Determines the moving piece, captured piece, and handles special cases
+        like en passant captures and default queen promotions.
+
+        Args:
+            f (int): From square index (0-63).
+            t (int): To square index (0-63).
+            pp (int): Intended promotion piece type (used if `f` to `t` is a promotion).
+                      If Piece.NONE, defaults to Queen on promotion.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            int: The encoded move integer.
         """
-        pc = bd.square(f)
-        cp = bd.square(t)
+        pc = bd.square(f) # Moving piece
+        cp = bd.square(t) # Piece on destination square (could be NONE)
 
+        # Handle en passant: If a pawn moves to the EP square, the captured piece is a pawn.
         if pc == Piece.PAWN and t == bd.ep_sq():
-            cp = Piece.PAWN
+            cp = Piece.PAWN # Set captured piece to Pawn for EP
 
+        # Handle default promotion: If a pawn reaches the back rank and no promotion piece
+        # is specified (pp == Piece.NONE), default to promoting to a Queen.
         if pc == Piece.PAWN and Square.is_promotion(t) and pp == Piece.NONE:
             pp = Piece.QUEEN
 
+        # Encode the move using the determined pieces.
         return Move.make(f, t, pc, cp, pp)
 
     @staticmethod
     def from_string(s: str, bd: 'Board.BOARD') -> int:
         """
-        Convert a string representation of a move to its integer encoding.
+        Convert a move string in Coordinate Algebraic Notation (CAN) (e.g., "e2e4", "e7e8q")
+        to its encoded integer representation, using board context.
+
+        Args:
+            s (str): The move string (4 or 5 characters).
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            int: The encoded move integer.
+
+        Raises:
+            AssertionError: If the string length is invalid.
         """
         assert len(s) >= 4, "Move string must be at least 4 characters."
 
-        f = Square.from_string(s[:2])
-        t = Square.from_string(s[2:4])
+        f = Square.from_string(s[:2]) # Parse 'from' square
+        t = Square.from_string(s[2:4]) # Parse 'to' square
+        # Parse promotion piece if present (5th character), otherwise NONE.
         pp = Piece.from_char(s[4].upper()) if len(s) > 4 else Piece.NONE
 
+        # Use make_move to handle context-dependent details (EP, default promotion).
         return Move.make_move(f, t, pp, bd)
-    
+
     @staticmethod
     def see(mv: int, alpha: int, beta: int, bd: 'Board.BOARD') -> int:
         """
-        Static Exchange Evaluation (SEE) for a move.
+        Static wrapper method to perform Static Exchange Evaluation (SEE) for a move.
+        Creates a temporary SEE object to perform the calculation.
+
+        Args:
+            mv (int): The encoded move integer.
+            alpha (int): Lower bound for the SEE score.
+            beta (int): Upper bound for the SEE score.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            int: The SEE score.
         """
-        see_evaluator = Move.SEE()
+        see_evaluator = Move.SEE() # Create a temporary SEE instance
         return see_evaluator.see(mv, alpha, beta, bd)
 
     @staticmethod
     def see_max(mv: int) -> int:
         """
-        Calculate the maximum SEE (Static Exchange Evaluation) score for a move.
+        Calculate the maximum possible material gain from a tactical move,
+        ignoring subsequent captures by the opponent. Used for delta pruning.
+
+        Args:
+            mv (int): The encoded tactical move integer.
+
+        Returns:
+            int: The value of the captured piece plus the value difference if it's a promotion.
+
+        Raises:
+            AssertionError: If the move is not tactical.
         """
         assert Move.is_tactical(mv), "SEE max called on non-tactical move."
 
+        # Start with the value of the captured piece (can be 0 if NONE)
         sc = Piece.value(Move.cap(mv))
 
+        # If it's a promotion, add the value difference (promoted piece - pawn)
         pp = Move.prom(mv)
         if pp != Piece.NONE:
             sc += Piece.value(pp) - Piece.PAWN_VALUE
@@ -1772,109 +2109,197 @@ class Move:
     @staticmethod
     def is_safe(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Determine if making a move is safe based on SEE.
+        Determine if making a move `mv` is considered "safe" based on SEE.
+        A move is safe if:
+        - It's a King move.
+        - It captures a piece of equal or greater value than the attacker.
+        - It's not an under-promotion.
+        - The SEE score is non-negative (>= 0).
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if the move is considered safe, False otherwise.
         """
-        pc = Move.piece(mv)
-        cp = Move.cap(mv)
-        pp = Move.prom(mv)
+        pc = Move.piece(mv) # Moving piece
+        cp = Move.cap(mv)   # Captured piece
+        pp = Move.prom(mv)  # Promotion piece
 
         if pc == Piece.KING:
-            return True
+            return True # King moves are always considered "safe" in this context
         elif Piece.value(cp) >= Piece.value(pc):
+            # Capturing a piece of equal or greater value is generally safe
             return True
         elif pp != Piece.NONE and pp != Piece.QUEEN:
+            # Under-promotions are generally considered unsafe unless forced
             return False
         else:
+            # Otherwise, check if the SEE score is non-negative (doesn't lose material)
+            # SEE bounds [-1, 0]: Is score >= 0?
             return Move.see(mv, -1, 0, bd) >= 0
 
     @staticmethod
     def is_win(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Determine if making a move results in a win based on SEE.
+        Determine if making a tactical move `mv` results in a material "win" based on SEE.
+        A move is winning if:
+        - It's a King move (considered winning for simplicity here).
+        - It captures a piece of strictly greater value than the attacker.
+        - It's not an under-promotion.
+        - The SEE score is strictly positive (> 0).
+
+        Args:
+            mv (int): The encoded tactical move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if the move is considered winning, False otherwise.
+
+        Raises:
+            AssertionError: If the move is not tactical.
         """
         assert Move.is_tactical(mv), "is_win called on non-tactical move."
 
-        pc = Move.piece(mv)
-        cp = Move.cap(mv)
-        pp = Move.prom(mv)
+        pc = Move.piece(mv) # Moving piece
+        cp = Move.cap(mv)   # Captured piece
+        pp = Move.prom(mv)  # Promotion piece
 
         if pc == Piece.KING:
-            return True
+            return True # King moves considered winning
         elif Piece.value(cp) > Piece.value(pc):
+            # Capturing a piece of strictly greater value is winning
             return True
         elif pp != Piece.NONE and pp != Piece.QUEEN:
+            # Under-promotions are not considered winning here
             return False
         else:
+            # Otherwise, check if the SEE score is strictly positive (gains material)
+            # SEE bounds [0, +1]: Is score > 0?
             return Move.see(mv, 0, +1, bd) > 0
+
+    # --- Legality and Check Detection ---
 
     @staticmethod
     def is_legal_debug(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Debug function to check move legality by making and undoing the move.
+        Debug function to check move legality by making the move, checking if the
+        king is attacked, and then undoing the move. Slower than `is_legal`.
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if the move is legal, False otherwise.
         """
-        bd.move(mv)
+        bd.move(mv) # Make the move on the board
+        # Check if the side that just moved *left* their king in check
         b = Attack.is_legal(bd)
-        bd.undo()
+        bd.undo() # Undo the move
         return b
 
     @staticmethod
     def is_legal(mv: int, bd: 'Board.BOARD', attacks: 'Attack.Attacks') -> bool:
         """
-        Check if a move is legal based on board state and attack information.
+        Check if a pseudo-legal move `mv` is strictly legal, considering pins and king attacks.
+        Assumes `mv` is pseudo-legal (correct piece movement, not capturing own piece).
+        Relies on pre-calculated attack information (`attacks`) for efficiency.
+
+        Args:
+            mv (int): The encoded pseudo-legal move integer.
+            bd (Board.BOARD): The current board state.
+            attacks (Attack.Attacks): Pre-calculated attack info (pinned pieces, attackers to king).
+
+        Returns:
+            bool: True if the move is strictly legal, False otherwise.
         """
-        sd = bd.turn()
+        sd = bd.turn() # Side to move
 
-        f = Move.from_sq(mv)
-        t = Move.to_sq(mv)
+        f = Move.from_sq(mv) # From square
+        t = Move.to_sq(mv)   # To square
 
+        # En passant requires special handling (checking discovered check along rank)
+        # Use the slower debug version for EP.
         if Move.is_en_passant(mv, bd):
             return Move.is_legal_debug(mv, bd)
 
+        # If the King is moving, check if the destination square is attacked by the opponent.
         if Move.piece(mv) == Piece.KING:
             return not Attack.is_attacked(t, Side.opposit(sd), bd)
 
+        # If the moving piece is NOT pinned, the move is legal (as it's pseudo-legal).
         if not Bit.is_set(attacks.pinned, f):
             return True
 
+        # If the piece IS pinned, it can only move along the ray between the king and the pinning piece.
+        # Check if the 'to' square `t` lies on the ray from the king `bd.king(sd)` through the pinned piece `f`.
         if Bit.is_set(Attack.ray(bd.king(sd), f), t):
             return True
 
+        # If the piece is pinned and does not move along the pin ray, it's illegal.
         return False
 
     @staticmethod
     def is_check_debug(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Debug function to check if a move results in a check.
+        Debug function to check if a move results in check by making the move,
+        checking if the opponent is now in check, and then undoing the move. Slower than `is_check`.
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if the move results in check, False otherwise.
         """
-        bd.move(mv)
+        bd.move(mv) # Make the move
+        # Check if the side whose turn it *now* is, is in check
         b = Attack.is_in_check(bd)
-        bd.undo()
+        bd.undo() # Undo the move
         return b
 
     @staticmethod
     def is_check(mv: int, bd: 'Board.BOARD') -> bool:
         """
-        Determine if making a move results in a check.
+        Determine if making a move `mv` results in checking the opponent's king.
+        Uses optimized checks for common cases and falls back to `is_check_debug`
+        for complex moves (promotions, EP, castling).
+
+        Args:
+            mv (int): The encoded move integer.
+            bd (Board.BOARD): The current board state.
+
+        Returns:
+            bool: True if the move results in check, False otherwise.
         """
+        # For complex moves, use the slower make/unmake method.
         if Move.is_promotion(mv) or Move.is_en_passant(mv, bd) or Move.is_castling(mv):
             return Move.is_check_debug(mv, bd)
 
-        f = Move.from_sq(mv)
-        t = Move.to_sq(mv)
+        f = Move.from_sq(mv) # From square
+        t = Move.to_sq(mv)   # To square
 
+        # Determine the piece type on the 'to' square *after* the move (handles promotion default)
         pc = Move.prom(mv) if Move.prom(mv) != Piece.NONE else Move.piece(mv)
-        sd = bd.square_side(f)
+        sd = bd.square_side(f) # Side making the move
 
-        king = bd.king(Side.opposit(sd))
+        king = bd.king(Side.opposit(sd)) # Opponent's king square
 
+        # 1. Direct check: Does the moved piece attack the king from the 'to' square?
+        #    Need to consider blockers for sliders.
         if Attack.attack(pc, sd, t, king, bd):
             return True
 
+        # 2. Discovered check: Did moving the piece from 'f' reveal an attack on the king?
+        #    Check if a slider behind 'f' now attacks the king, AND
+        #    ensure the moved piece 't' is not blocking this discovered attack.
         if Attack.attack_behind(king, f, sd, bd) and not Bit.is_set(Attack.ray(king, f), t):
             return True
 
+        # If neither direct nor discovered check occurred.
         return False
-
 
 class Bit:
     # Bitboards for left, right, front, rear
